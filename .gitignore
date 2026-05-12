@@ -1,0 +1,6 @@
+*.rvt
+*.pdf
+*.zip
+PLANTAS HOTEL LIBÓRIO/
+__pycache__/
+.venv/

@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ALMOXARIFADO — Gestão</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+<!-- ═══════════════════════════════ TOPBAR ═══════════════════════════════ -->
+<header class="topbar">
+  <a class="logo" href="/">
+    <div class="logo-badge">ALM</div>
+    <div>
+      <div class="logo-name">ALMOXARIFADO - HOTEL LIBÓRIO</div>
+      <span class="logo-sub">Gestão de Canteiro</span>
+    </div>
+  </a>
+  <div class="topbar-spacer"></div>
+  <div class="topbar-btns">
+    <button class="btn btn-ghost btn-sm" onclick="show('m-add')">＋ Novo Item</button>
+    <button class="btn btn-primary btn-sm" onclick="show('m-semana')">⚡ Fechar Semana</button>
+    <button class="theme-toggle" id="theme-btn" onclick="toggleTheme()" title="Alternar modo claro/escuro">
+      <span id="theme-icon">☀</span>
+    </button>
+  </div>
+</header>
+
+<!-- ═══════════════════════════════ PAGE ════════════════════════════════ -->
+<div class="page">
+
+  <!-- Flash -->
+  {% with msgs = get_flashed_messages() %}{% if msgs %}
+  <div class="flash-wrap">
+    {% for m in msgs %}<div class="flash">⚡ {{ m }}</div>{% endfor %}
+  </div>
+  {% endif %}{% endwith %}
+
+  <!-- ── KPIs ──────────────────────────────────────────────────────── -->
+  <div class="kpi-strip">
+    <div class="kpi">
+      <div class="kpi-ico blue">📦</div>
+      <div>
+        <div class="kpi-num blue">{{ total_itens }}</div>
+        <div class="kpi-lbl">Itens no Estoque</div>
+      </div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-ico red">🔴</div>
+      <div>
+        <div class="kpi-num red">{{ criticos }}</div>
+        <div class="kpi-lbl">Estoque Crítico</div>
+      </div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-ico yellow">⚠</div>
+      <div>
+        <div class="kpi-num yellow">{{ alertas }}</div>
+        <div class="kpi-lbl">Em Alerta</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Painel duplo: Pesquisa + Importar ─────────────────────────── -->
+  <div class="panel-row">
+
+    <!-- Pesquisa -->
+    <div class="panel">
+      <div class="panel-hd">🔍 Pesquisa e Filtros</div>
+      <form method="GET" action="/">
+        <div class="form-row" style="margin-bottom:10px;">
+          <div class="fg" style="flex:2;">
+            <label>Texto</label>
+            <div class="search-wrap">
+              <span class="s-ico">🔍</span>
+              <input type="text" name="busca" placeholder="Filtrar itens…" value="{{ busca }}">
+            </div>
+          </div>
+          <div class="fg xs">
+            <label>Buscar em</label>
+            <select name="campo">
+              <option value="nome"      {% if filtro_campo=='nome'      %}selected{% endif %}>Nome</option>
+              <option value="categoria" {% if filtro_campo=='categoria' %}selected{% endif %}>Categoria</option>
+              <option value="tipo"      {% if filtro_campo=='tipo'      %}selected{% endif %}>Tipo</option>
+              <option value="unidade"   {% if filtro_campo=='unidade'   %}selected{% endif %}>Unidade</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="fg">
+            <label>Categoria</label>
+            <select name="categoria">
+              <option value="">Todas</option>
+              {% for c in categorias %}
+              <option value="{{ c }}" {% if filtro_categoria==c %}selected{% endif %}>{{ c }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="fg">
+            <label>Tipo</label>
+            <select name="tipo">
+              <option value="">Todos</option>
+              {% for t in tipos %}
+              <option value="{{ t }}" {% if filtro_tipo==t %}selected{% endif %}>{{ t }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="fg">
+            <label>Nível de Risco</label>
+            <select name="risco">
+              <option value="">Todos</option>
+              <option value="risco-critico" {% if filtro_risco=='risco-critico' %}selected{% endif %}>🔴 Crítico (≤7d)</option>
+              <option value="risco-proximo" {% if filtro_risco=='risco-proximo' %}selected{% endif %}>⚠️ Alerta (≤14d)</option>
+              <option value="risco-ok"      {% if filtro_risco=='risco-ok'      %}selected{% endif %}>✅ OK (&gt;14d)</option>
+              <option value="risco-nulo"    {% if filtro_risco=='risco-nulo'    %}selected{% endif %}>— Sem dados</option>
+            </select>
+          </div>
+          <div style="display:flex;gap:6px;align-self:flex-end;">
+            <button type="submit" class="btn btn-blue btn-sm">Filtrar</button>
+            <a href="/" class="btn btn-ghost btn-sm">✕</a>
+          </div>
+        </div>
+      </form>
+    </div>
+
+    <!-- Importar Excel -->
+    <div class="panel">
+      <div class="panel-hd">📂 Importar Planilha Excel</div>
+      <form action="/upload_excel" method="post" enctype="multipart/form-data" id="upload-form">
+        <div class="drop-zone" id="dz" onclick="document.getElementById('file-inp').click()">
+          <div class="dz-ico">📊</div>
+          <p id="dz-label">Clique ou arraste o arquivo <strong>.xlsx</strong></p>
+          <small>Colunas: Item · Categoria · Tipo · Unid. · Qtd. Inicial · Qtd. Gasta</small>
+        </div>
+        <input type="file" id="file-inp" name="file" accept=".xlsx">
+        <div class="upload-footer">
+          <div class="fg" style="max-width:190px;">
+            <label>Dia dos gastos</label>
+            <input type="date" name="data_gasto" id="upload-data" value="{{ hoje }}">
+          </div>
+          <button type="submit" class="btn btn-primary" id="sync-btn" disabled>
+            ⚡ Sincronizar Planilha
+          </button>
+        </div>
+      </form>
+    </div>
+
+  </div>
+
+  <!-- ── Tabela Principal ───────────────────────────────────────────── -->
+  <div class="panel">
+    <div class="panel-hd">
+      📋 Itens no Estoque
+      <span>{{ produtos|length }} resultado(s)</span>
+    </div>
+
+    {% if produtos %}
+    <div class="tbl-wrap">
+      <table class="tbl">
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>Categoria / Tipo</th>
+            <th>Unid.</th>
+            <th>Qtd. Atual</th>
+            <th>Gastos da Semana</th>
+            <th>Previsão</th>
+            <th>Status</th>
+            <th style="text-align:center;">Ações</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for p in produtos %}
+          <tr class="{{ p.classe }}">
+
+            <td><div class="td-nome">{{ p.nome }}</div></td>
+
+            <td>
+              <span class="tag">{{ p.categoria or '—' }}</span>
+              <div class="td-dim">{{ p.tipo or '—' }}</div>
+            </td>
+
+            <td class="td-dim" style="font-size:13px;">{{ p.unidade or '—' }}</td>
+
+            <td><span class="td-num">{{ p.qtd_atual | int }}</span></td>
+
+            <td>
+              {% if p.gastos %}
+                {% set max_q = p.gastos | map(attribute='quantidade') | max %}
+                <div class="mini-bars">
+                  {% for g in p.gastos %}
+                    {% set h = ((g.quantidade / max_q * 18) | int) if max_q > 0 else 2 %}
+                    <div class="mini-bar" style="height:{{ [h,2]|max }}px"
+                         title="{{ g.data }}: {{ g.quantidade }} {{ p.unidade }}"></div>
+                  {% endfor %}
+                  {% for _ in range(6 - p.gastos|length) %}
+                    <div class="mini-empty"></div>
+                  {% endfor %}
+                </div>
+                <div class="td-dim" style="margin-top:4px;">
+                  Total <strong style="color:var(--text)">{{ p.total_gastos_semana | int }}</strong>
+                  · Méd. {{ p.media_diaria }}/dia
+                  {% if p.tendencia is defined and p.tendencia != 0 %}
+                    {% if p.tendencia > 0 %}<span style="color:var(--red)">↑</span>
+                    {% else %}<span style="color:var(--green)">↓</span>{% endif %}
+                  {% endif %}
+                </div>
+              {% else %}
+                <span class="td-dim">Sem registros</span>
+              {% endif %}
+            </td>
+
+            <td>
+              {% if p.dias_restantes %}
+                <div class="prev-num">{{ p.dias_restantes | int }}<span class="prev-unit">d</span></div>
+                <div style="margin-top:3px;">
+                  <span class="conf" title="Confiança baseada nos dias registrados">{{ p.confianca }}% conf.</span>
+                </div>
+              {% else %}
+                <span class="td-dim">—</span>
+              {% endif %}
+            </td>
+
+            <td><span class="badge">{{ p.status }}</span></td>
+
+            <td>
+              <div style="display:flex;gap:4px;justify-content:center;">
+                <button class="btn-ico" title="Registrar gasto diário"
+                  onclick="openGasto({{ p.id }}, '{{ p.nome|replace("'", "\\'")|replace('"','') }}', '{{ p.unidade or '' }}')">📝</button>
+                <button class="btn-ico success" title="Ver histórico e previsão"
+                  onclick="openDetalhe({{ p.id }}, '{{ p.nome|replace("'", "\\'")|replace('"','') }}')">📊</button>
+                <a href="/deletar/{{ p.id }}" class="btn-ico danger" title="Apagar"
+                   onclick="return confirm('Apagar {{ p.nome }}?')">🗑</a>
+              </div>
+            </td>
+
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% else %}
+    <div class="empty">
+      <div class="empty-ico">📭</div>
+      <p>Nenhum item encontrado.<br>Importe uma planilha ou adicione manualmente.</p>
+    </div>
+    {% endif %}
+  </div>
+
+</div><!-- /page -->
+
+
+<!-- ══════════════════════════════════════════════════════════════
+     MODAIS
+══════════════════════════════════════════════════════════════ -->
+
+<!-- ── Modal: Novo Item ──────────────────────────────────────────── -->
+<div class="overlay" id="m-add">
+  <div class="modal">
+    <div class="modal-hd">
+      <div class="modal-title">＋ Adicionar Item</div>
+      <button class="btn-ico" onclick="hide('m-add')">✕</button>
+    </div>
+    <form action="/adicionar" method="post">
+      <div class="modal-body">
+        <div class="fg" style="margin-bottom:13px;">
+          <label>Nome do Item *</label>
+          <input type="text" name="nome" placeholder="Ex: Cimento CP II" required>
+        </div>
+        <div class="form-row" style="margin-bottom:13px;">
+          <div class="fg">
+            <label>Categoria</label>
+            <input type="text" name="categoria" placeholder="Ex: Pedreiro">
+          </div>
+          <div class="fg">
+            <label>Tipo</label>
+            <input type="text" name="tipo" placeholder="Ex: Material">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="fg">
+            <label>Unidade de Medida</label>
+            <input type="text" name="unidade" placeholder="Ex: Sacos">
+          </div>
+          <div class="fg">
+            <label>Quantidade Atual</label>
+            <input type="number" name="qtd" placeholder="0" min="0" step="0.01">
+          </div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-ghost" onclick="hide('m-add')">Cancelar</button>
+        <button type="submit" class="btn btn-primary">Adicionar</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── Modal: Registrar Gasto ────────────────────────────────────── -->
+<div class="overlay" id="m-gasto">
+  <div class="modal">
+    <div class="modal-hd">
+      <div class="modal-title" id="gasto-title">📝 Registrar Gasto</div>
+      <button class="btn-ico" onclick="hide('m-gasto')">✕</button>
+    </div>
+    <form action="/registrar_gasto" method="post">
+      <input type="hidden" name="item_id" id="gasto-id">
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="fg">
+            <label>Data</label>
+            <input type="date" name="data_gasto" id="gasto-data" value="{{ hoje }}">
+          </div>
+          <div class="fg">
+            <label id="gasto-unid-label">Quantidade Gasta</label>
+            <input type="number" name="quantidade" placeholder="0" min="0" step="0.01" required>
+          </div>
+        </div>
+        <div class="sep"></div>
+        <p style="font-size:12px;color:var(--text3);line-height:1.7;">
+          ℹ Se já houver um registro para este dia, ele será substituído.<br>
+          Os gastos diários alimentam a previsão por <strong style="color:var(--text2)">regressão linear (OLS)</strong>.
+          Quanto mais dias registrados, maior a precisão e a confiança da estimativa.
+        </p>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-ghost" onclick="hide('m-gasto')">Cancelar</button>
+        <button type="submit" class="btn btn-primary">Salvar Gasto</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── Modal: Detalhes / Histórico ───────────────────────────────── -->
+<div class="overlay" id="m-detalhe">
+  <div class="modal wide">
+    <div class="modal-hd">
+      <div class="modal-title" id="det-title">📊 Detalhes</div>
+      <button class="btn-ico" onclick="hide('m-detalhe')">✕</button>
+    </div>
+    <div class="modal-body" id="det-body">
+      <p style="color:var(--text2);text-align:center;padding:30px 0;">Carregando…</p>
+    </div>
+    <div class="modal-foot" id="det-foot">
+      <button class="btn btn-ghost" onclick="hide('m-detalhe')">Fechar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Modal: Fechar Semana ──────────────────────────────────────── -->
+<div class="overlay" id="m-semana">
+  <div class="modal">
+    <div class="modal-hd">
+      <div class="modal-title">⚡ Fechar Semana</div>
+      <button class="btn-ico" onclick="hide('m-semana')">✕</button>
+    </div>
+    <div class="modal-body">
+      <p style="color:var(--text2);font-size:13.5px;margin-bottom:14px;">
+        Esta ação irá <strong style="color:var(--accent)">somar todos os gastos diários registrados</strong>,
+        descontar do estoque atual de cada item e
+        <strong style="color:var(--red)">limpar os registros</strong> para a próxima semana.
+      </p>
+      <div class="week-info">
+        ✅ &nbsp;Gastos somados e descontados do estoque de cada item<br>
+        🔄 &nbsp;Registros diários apagados (pronto para nova semana)<br>
+        📊 &nbsp;A previsão será recalculada conforme novos dados entrarem
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="hide('m-semana')">Cancelar</button>
+      <form action="/fechar_semana_todos" method="post" style="display:inline;">
+        <button type="submit" class="btn btn-primary"
+          onclick="return confirm('Confirmar fechamento de semana para todos os itens?')">
+          ✅ Confirmar Fechamento
+        </button>
+      </form>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════ SCRIPTS ══════════════════════════════ -->
+<script>
+/* ── Modais ─────────────────────────────────────────────────────────── */
+function show(id) {
+  document.getElementById(id).classList.add('on');
+  document.body.style.overflow = 'hidden';
+}
+function hide(id) {
+  document.getElementById(id).classList.remove('on');
+  document.body.style.overflow = '';
+}
+
+document.querySelectorAll('.overlay').forEach(el => {
+  el.addEventListener('click', e => { if (e.target === el) hide(el.id); });
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape')
+    document.querySelectorAll('.overlay.on').forEach(el => hide(el.id));
+});
+
+/* ── Gasto diário ────────────────────────────────────────────────── */
+function openGasto(id, nome, unid) {
+  document.getElementById('gasto-id').value = id;
+  document.getElementById('gasto-title').textContent = '📝 Gasto — ' + nome;
+  document.getElementById('gasto-unid-label').textContent =
+    'Quantidade Gasta' + (unid ? ' (' + unid + ')' : '');
+  show('m-gasto');
+}
+
+/* ── Modal de Detalhes ───────────────────────────────────────────── */
+async function openDetalhe(id, nome) {
+  document.getElementById('det-title').textContent = '📊 ' + nome;
+  document.getElementById('det-body').innerHTML =
+    '<p style="color:var(--text2);text-align:center;padding:30px 0;">Carregando…</p>';
+  document.getElementById('det-foot').innerHTML =
+    '<button class="btn btn-ghost" onclick="hide(\'m-detalhe\')">Fechar</button>';
+  show('m-detalhe');
+
+  try {
+    const res  = await fetch('/api/item/' + id);
+    const data = await res.json();
+    renderDetalhe(data);
+  } catch(e) {
+    document.getElementById('det-body').innerHTML =
+      '<p style="color:var(--red);text-align:center;padding:20px 0;">Erro ao carregar dados.</p>';
+  }
+}
+
+function renderDetalhe(data) {
+  const { item, gastos, previsao: p } = data;
+  const qtd   = parseFloat(item.qtd_atual) || 0;
+  const total = gastos.reduce((s, g) => s + parseFloat(g.quantidade), 0);
+  const dias  = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+
+  const infoHtml = `
+    <div class="info-grid">
+      <div class="info-box">
+        <div class="info-val">${Math.round(qtd)}</div>
+        <div class="info-lbl">Qtd. Atual${item.unidade ? ' ('+item.unidade+')' : ''}</div>
+      </div>
+      <div class="info-box">
+        <div class="info-val">${p.dias_restantes ? Math.round(p.dias_restantes) : '—'}</div>
+        <div class="info-lbl">Dias Restantes</div>
+      </div>
+      <div class="info-box">
+        <div class="info-val">${p.confianca || 0}%</div>
+        <div class="info-lbl">Confiança</div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px;font-size:12.5px;color:var(--text2);">
+      <div>Média/dia: <strong style="color:var(--text)">${p.media_diaria}</strong></div>
+      <div>Desvio padrão: <strong style="color:var(--text)">${p.desvio_padrao}</strong></div>
+      <div>Tendência:
+        <strong style="color:${parseFloat(p.tendencia||0) > 0 ? 'var(--red)' : parseFloat(p.tendencia||0) < 0 ? 'var(--green)' : 'var(--text3)'}">
+          ${parseFloat(p.tendencia||0) > 0 ? '↑' : parseFloat(p.tendencia||0) < 0 ? '↓' : '→'}
+          ${Math.abs(parseFloat(p.tendencia||0))}/dia
+        </strong>
+      </div>
+    </div>`;
+
+  let gastosHtml = '';
+  if (gastos.length > 0) {
+    gastosHtml = `
+      <div class="sep"></div>
+      <div class="panel-hd" style="margin-bottom:8px;">📅 Gastos Esta Semana</div>
+      <table class="g-tbl">
+        <thead><tr><th>Dia</th><th>Data</th><th>Quantidade</th><th>Barra</th></tr></thead>
+        <tbody>
+          ${gastos.map(g => {
+            const pct  = total > 0 ? Math.round((parseFloat(g.quantidade) / total) * 100) : 0;
+            const d    = new Date(g.data + 'T12:00:00');
+            return `<tr>
+              <td style="color:var(--text2)">${dias[d.getDay()]}</td>
+              <td>${g.data}</td>
+              <td><strong>${g.quantidade}</strong> ${item.unidade || ''}</td>
+              <td>
+                <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3);">
+                  <div style="width:${Math.min(pct,80)}px;height:5px;background:var(--accent);border-radius:3px;opacity:.7;"></div>
+                  ${pct}%
+                </div>
+              </td>
+            </tr>`;
+          }).join('')}
+          <tr style="border-top:1px solid var(--border2);">
+            <td colspan="2" style="color:var(--text2);font-weight:600;">Total da semana</td>
+            <td colspan="2"><strong style="color:var(--accent)">${total.toFixed(1)}</strong> ${item.unidade || ''}</td>
+          </tr>
+        </tbody>
+      </table>`;
+  } else {
+    gastosHtml = `
+      <div class="sep"></div>
+      <p style="color:var(--text3);font-size:13px;text-align:center;padding:20px 0;">
+        Nenhum gasto registrado esta semana.<br>
+        Use o botão 📝 para inserir gastos diários.
+      </p>`;
+  }
+
+  document.getElementById('det-body').innerHTML = infoHtml + gastosHtml;
+  document.getElementById('det-foot').innerHTML = `
+    <button class="btn btn-ghost" onclick="hide('m-detalhe')">Fechar</button>
+    <form action="/fechar_semana/${item.id}" method="post" style="display:inline;">
+      <button type="submit" class="btn btn-red btn-sm"
+        onclick="return confirm('Fechar semana de ${item.nome.replace(/'/g,"\\'")} e descontar ${total.toFixed(1)} ${item.unidade || ''}?')">
+        🔄 Fechar Semana deste Item
+      </button>
+    </form>`;
+}
+
+/* ── Drop zone ───────────────────────────────────────────────────── */
+const dz   = document.getElementById('dz');
+const finp = document.getElementById('file-inp');
+const lbl  = document.getElementById('dz-label');
+const sbtn = document.getElementById('sync-btn');
+
+if (finp) {
+  finp.addEventListener('change', () => {
+    if (finp.files.length) {
+      lbl.innerHTML = `<strong>${finp.files[0].name}</strong> selecionado`;
+      sbtn.disabled = false;
+    }
+  });
+}
+if (dz) {
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('over'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault(); dz.classList.remove('over');
+    const file = e.dataTransfer.files[0];
+    if (file && file.name.endsWith('.xlsx')) {
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      finp.files = dt.files;
+      lbl.innerHTML = `<strong>${file.name}</strong> pronto para sincronizar`;
+      sbtn.disabled = false;
+    }
+  });
+}
+
+/* ── Auto-fechar flash ───────────────────────────────────────────── */
+setTimeout(() => {
+  document.querySelectorAll('.flash').forEach(el => {
+    el.style.transition = 'opacity .5s';
+    el.style.opacity    = '0';
+    setTimeout(() => el.remove(), 500);
+  });
+}, 5000);
+
+/* ── Tema Claro / Escuro ─────────────────────────────────────────── */
+function toggleTheme() {
+  const isLight = document.documentElement.classList.toggle('light');
+  document.getElementById('theme-icon').textContent = isLight ? '🌙' : '☀';
+  localStorage.setItem('almox-theme', isLight ? 'light' : 'dark');
+}
+
+// Aplica o tema salvo ao carregar a página
+(function () {
+  if (localStorage.getItem('almox-theme') === 'light') {
+    document.documentElement.classList.add('light');
+    const icon = document.getElementById('theme-icon');
+    if (icon) icon.textContent = '🌙';
+  }
+})();
+</script>
+
+</body>
+</html>
