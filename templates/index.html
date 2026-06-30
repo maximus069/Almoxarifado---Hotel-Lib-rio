@@ -1,570 +1,917 @@
 <!DOCTYPE html>
 <html lang="pt-br">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ALMOXARIFADO — Gestão</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Projeto 2.0</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
 
-<!-- ═══════════════════════════════ TOPBAR ═══════════════════════════════ -->
 <header class="topbar">
   <a class="logo" href="/">
     <div class="logo-badge">ALM</div>
     <div>
-      <div class="logo-name">ALMOXARIFADO - HOTEL LIBÓRIO</div>
+      <div class="logo-name">ALMOXARIFADO</div>
       <span class="logo-sub">Gestão de Canteiro</span>
     </div>
   </a>
   <div class="topbar-spacer"></div>
   <div class="topbar-btns">
-    <button class="btn btn-ghost btn-sm" onclick="show('m-add')">＋ Novo Item</button>
-    <button class="btn btn-primary btn-sm" onclick="show('m-semana')">⚡ Fechar Semana</button>
-    <button class="theme-toggle" id="theme-btn" onclick="toggleTheme()" title="Alternar modo claro/escuro">
-      <span id="theme-icon">☀</span>
-    </button>
+    <button class="btn btn-ghost btn-sm" type="button" onclick="abreModal('m-add')">＋ Novo Item</button>
+    <button class="btn btn-primary btn-sm" type="button" onclick="abreModal('m-semana')">📋 Fechar Agora</button>
   </div>
 </header>
 
-<!-- ═══════════════════════════════ PAGE ════════════════════════════════ -->
 <div class="page">
 
-  <!-- Flash -->
-  {% with msgs = get_flashed_messages() %}{% if msgs %}
-  <div class="flash-wrap">
-    {% for m in msgs %}<div class="flash">⚡ {{ m }}</div>{% endfor %}
-  </div>
-  {% endif %}{% endwith %}
+  {# Flashes do backend só aparecem após uploads/ações que precisam de reload (upload_excel, fechar_semana) #}
+  {% with msgs = get_flashed_messages() %}
+    {% if msgs %}
+    <div class="flash-wrap" id="flash-wrap">
+      {% for m in msgs %}
+        {% if m.startswith('DIVERGENCIA:') %}
+          {% set parts = m[12:].split('||') %}
+          <div class="flash flash-warn">
+            ⚠ {{ parts[1] if parts|length > 1 else 'Divergências detectadas.' }}
+            <button class="btn btn-danger btn-sm" type="button" id="btn-ver-div">Ver →</button>
+          </div>
+          <script>
+            (function() {
+              var divs = {{ parts[0] | safe }};
+              document.getElementById('btn-ver-div').addEventListener('click', function() {
+                abreModal('m-div');
+                mostraDivergencias(divs);
+              });
+            })();
+          </script>
+        {% else %}
+          <div class="flash">✅ {{ m }}</div>
+        {% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
+  {% endwith %}
 
-  <!-- ── KPIs ──────────────────────────────────────────────────────── -->
+  {# KPIs — IDs expostos para o JS recalcular ao adicionar/deletar/registrar gasto #}
   <div class="kpi-strip">
     <div class="kpi">
       <div class="kpi-ico blue">📦</div>
       <div>
-        <div class="kpi-num blue">{{ total_itens }}</div>
+        <div class="kpi-num blue" id="kpi-total">{{ total_itens }}</div>
         <div class="kpi-lbl">Itens no Estoque</div>
       </div>
     </div>
     <div class="kpi">
       <div class="kpi-ico red">🔴</div>
       <div>
-        <div class="kpi-num red">{{ criticos }}</div>
+        <div class="kpi-num red" id="kpi-criticos">{{ criticos }}</div>
         <div class="kpi-lbl">Estoque Crítico</div>
       </div>
     </div>
     <div class="kpi">
       <div class="kpi-ico yellow">⚠</div>
       <div>
-        <div class="kpi-num yellow">{{ alertas }}</div>
+        <div class="kpi-num yellow" id="kpi-alertas">{{ alertas }}</div>
         <div class="kpi-lbl">Em Alerta</div>
       </div>
     </div>
   </div>
 
-  <!-- ── Painel duplo: Pesquisa + Importar ─────────────────────────── -->
-  <div class="panel-row">
+  <div class="fechamento-bar">
+    <div class="fechamento-bar-info">
+      <span class="fechamento-bar-ico">🗓</span>
+      <div>
+        <div class="fechamento-bar-titulo">Fechamento automático todo domingo</div>
+        <div class="fechamento-bar-sub">
+          Próximo: <strong>{{ proximo_domingo }}</strong> — Gastos descontados, histórico por 30 dias
+        </div>
+      </div>
+    </div>
+    <div class="fechamento-bar-acoes">
+      {% if snapshot %}
+        <button class="btn btn-download btn-sm" type="button" onclick="abreModal('m-planilha'); abreDetalhePlanilha({{ snapshot.id }}, '{{ snapshot.arquivo_nome }}', '{{ snapshot.gerado_em_fmt }}')">
+          📋 Ver Planilhas
+        </button>
+        <button class="btn btn-download btn-sm" type="button" onclick="abreHistorico()">
+          🗂 Histórico
+        </button>
+      {% endif %}
+      <button class="btn btn-primary btn-sm" type="button" onclick="abreModal('m-semana')">📋 Fechar Agora</button>
+    </div>
+  </div>
 
-    <!-- Pesquisa -->
+  <div class="panel-row">
     <div class="panel">
       <div class="panel-hd">🔍 Pesquisa e Filtros</div>
-      <form method="GET" action="/">
-        <div class="form-row" style="margin-bottom:10px;">
-          <div class="fg" style="flex:2;">
-            <label>Texto</label>
-            <div class="search-wrap">
+      {# Filtros são 100% locais — removidos value/selected do Jinja, o JS controla tudo #}
+      <form id="formFiltros" onsubmit="event.preventDefault(); filtrarTabelaLocal();">
+        <div class="form-row" style="margin-bottom:15px; display: block;">
+          <div class="fg" style="width: 100%;">
+            <label>Nome</label>
+            <div class="search-wrap" style="width: 100%; display: flex;">
               <span class="s-ico">🔍</span>
-              <input type="text" name="busca" placeholder="Filtrar itens…" value="{{ busca }}">
+              <input type="text" id="buscaNome" placeholder=" Digite o ITEM...">
             </div>
           </div>
-          <div class="fg xs">
-            <label>Buscar em</label>
-            <select name="campo">
-              <option value="nome"      {% if filtro_campo=='nome'      %}selected{% endif %}>Nome</option>
-              <option value="categoria" {% if filtro_campo=='categoria' %}selected{% endif %}>Categoria</option>
-              <option value="tipo"      {% if filtro_campo=='tipo'      %}selected{% endif %}>Tipo</option>
-              <option value="unidade"   {% if filtro_campo=='unidade'   %}selected{% endif %}>Unidade</option>
-            </select>
-          </div>
         </div>
-        <div class="form-row">
-          <div class="fg">
+        <div class="form-row" style="display: flex; gap: 20px; align-items: flex-end; width: 100%;">
+          <div class="fg" style="flex: 1;">
             <label>Categoria</label>
-            <select name="categoria">
+            <select name="categoria" id="filtroCat" style="width: 100%;">
               <option value="">Todas</option>
-              {% for c in categorias %}
-              <option value="{{ c }}" {% if filtro_categoria==c %}selected{% endif %}>{{ c }}</option>
-              {% endfor %}
+              <option value="Administração">Administração</option>
+              <option value="Carpinteiro">Carpinteiro</option>
+              <option value="Ferramentas">Ferramentas</option>
+              <option value="Pedreiro">Pedreiro</option>
             </select>
           </div>
-          <div class="fg">
+          <div class="fg" style="flex: 1;">
             <label>Tipo</label>
-            <select name="tipo">
+            <select name="tipo" id="filtroTipo" style="width: 100%;">
               <option value="">Todos</option>
-              {% for t in tipos %}
-              <option value="{{ t }}" {% if filtro_tipo==t %}selected{% endif %}>{{ t }}</option>
-              {% endfor %}
+              <option value="EPI">EPI</option>
+              <option value="Equipamento">Equipamento</option>
+              <option value="Material">Material</option>
             </select>
           </div>
-          <div class="fg">
-            <label>Nível de Risco</label>
-            <select name="risco">
+          <div class="fg" style="flex: 1;">
+            <label>Risco</label>
+            <select name="risco" id="filtroRisco" style="width: 100%;">
               <option value="">Todos</option>
-              <option value="risco-critico" {% if filtro_risco=='risco-critico' %}selected{% endif %}>🔴 Crítico (≤7d)</option>
-              <option value="risco-proximo" {% if filtro_risco=='risco-proximo' %}selected{% endif %}>⚠️ Alerta (≤14d)</option>
-              <option value="risco-ok"      {% if filtro_risco=='risco-ok'      %}selected{% endif %}>✅ OK (&gt;14d)</option>
-              <option value="risco-nulo"    {% if filtro_risco=='risco-nulo'    %}selected{% endif %}>— Sem dados</option>
+              <option value="risco-critico">🔴 Crítico</option>
+              <option value="risco-proximo">⚠️ Alerta</option>
             </select>
           </div>
-          <div style="display:flex;gap:6px;align-self:flex-end;">
-            <button type="submit" class="btn btn-blue btn-sm">Filtrar</button>
-            <a href="/" class="btn btn-ghost btn-sm">✕</a>
+          <div style="display: flex; gap: 8px; margin-left: auto; padding-bottom: 1px;">
+            <button type="button" class="btn btn-blue btn-sm" onclick="filtrarTabelaLocal()">Filtrar</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="limparTodosOsFiltros()">✕</button>
           </div>
         </div>
       </form>
     </div>
 
-    <!-- Importar Excel -->
     <div class="panel">
       <div class="panel-hd">📂 Importar Planilha Excel</div>
-      <form action="/upload_excel" method="post" enctype="multipart/form-data" id="upload-form">
+      {# Upload Excel mantém POST pois o backend processa o arquivo e pode retornar divergências #}
+      <form action="/upload_excel" method="post" enctype="multipart/form-data">
         <div class="drop-zone" id="dz" onclick="document.getElementById('file-inp').click()">
           <div class="dz-ico">📊</div>
           <p id="dz-label">Clique ou arraste o arquivo <strong>.xlsx</strong></p>
           <small>Colunas: Item · Categoria · Tipo · Unid. · Qtd. Inicial · Qtd. Gasta</small>
         </div>
-        <input type="file" id="file-inp" name="file" accept=".xlsx">
+        <input type="file" id="file-inp" name="file" accept=".xlsx" style="display:none;">
         <div class="upload-footer">
-          <div class="fg" style="max-width:190px;">
-            <label>Dia dos gastos</label>
-            <input type="date" name="data_gasto" id="upload-data" value="{{ hoje }}">
+          <div class="fg" style="max-width:200px;">
+            <label>Data dos Gastos</label>
+            <input type="date" name="data_gasto" value="{{ hoje }}">
           </div>
           <button type="submit" class="btn btn-primary" id="sync-btn" disabled>
-            ⚡ Sincronizar Planilha
+            ⚡ Sincronizar
           </button>
         </div>
       </form>
     </div>
-
   </div>
 
-  <!-- ── Tabela Principal ───────────────────────────────────────────── -->
   <div class="panel">
-    <div class="panel-hd">
-      📋 Itens no Estoque
-      <span>{{ produtos|length }} resultado(s)</span>
-    </div>
-
-    {% if produtos %}
+    <div class="panel-hd">📦 Estoque de Itens</div>
     <div class="tbl-wrap">
-      <table class="tbl">
+      <table class="tbl" id="tbl-estoque">
         <thead>
           <tr>
             <th>Item</th>
             <th>Categoria / Tipo</th>
-            <th>Unid.</th>
-            <th>Qtd. Atual</th>
-            <th>Gastos da Semana</th>
-            <th>Previsão</th>
-            <th>Status</th>
+            <th style="text-align:center;">Qtd.</th>
+            <th style="text-align:center;">Previsão</th>
             <th style="text-align:center;">Ações</th>
           </tr>
         </thead>
-        <tbody>
-        {% for p in produtos %}
-          <tr class="{{ p.classe }}">
-
-            <td><div class="td-nome">{{ p.nome }}</div></td>
-
-            <td>
-              <span class="tag">{{ p.categoria or '—' }}</span>
-              <div class="td-dim">{{ p.tipo or '—' }}</div>
-            </td>
-
-            <td class="td-dim" style="font-size:13px;">{{ p.unidade or '—' }}</td>
-
-            <td><span class="td-num">{{ p.qtd_atual | int }}</span></td>
-
-            <td>
-              {% if p.gastos %}
-                {% set max_q = p.gastos | map(attribute='quantidade') | max %}
-                <div class="mini-bars">
-                  {% for g in p.gastos %}
-                    {% set h = ((g.quantidade / max_q * 18) | int) if max_q > 0 else 2 %}
-                    <div class="mini-bar" style="height:{{ [h,2]|max }}px"
-                         title="{{ g.data }}: {{ g.quantidade }} {{ p.unidade }}"></div>
-                  {% endfor %}
-                  {% for _ in range(6 - p.gastos|length) %}
-                    <div class="mini-empty"></div>
-                  {% endfor %}
+        <tbody id="tbl-body">
+          {% if itens %}
+            {% for item in itens %}
+              <tr class="{{ item['classe_risco'] }}" data-id="{{ item['id'] }}">
+                <td class="td-nome"><strong>{{ item['nome'] }}</strong></td>
+                <td>
+                  <span class="tag">{{ item['categoria'] }}</span>
+                  <div class="td-dim">{{ item['tipo'] }}</div>
+                </td>
+                <td style="text-align:center;">
+                  <span class="td-num qtd-val">{{ "%.2f"|format(item['qtd_atual']) }}</span>
+                  <span class="td-dim">{{ item['unidade'] }}</span>
+                </td>
+                <td style="text-align:center;">
+                  <span class="conf {{ item['classe_risco'] }}">{{ item['prev_status'] }}</span>
+                </td>
+                <td>
+                  <div style="display: flex; gap: 6px; justify-content: center; align-items: center;">
+                    <button type="button" class="btn btn-ico" title="Detalhes" onclick="abreDetalhe({{ item['id'] }}, '{{ item['nome'] }}')">🔍</button>
+                    <button type="button" class="btn btn-ico" title="Registrar Gasto" onclick="abreGasto({{ item['id'] }}, '{{ item['nome'] }}', '{{ item['unidade'] }}')">📝</button>
+                    <button type="button" class="btn btn-ico" title="Deletar" onclick="deletarItem(this, {{ item['id'] }})">🗑️</button>
+                  </div>
+                </td>
+              </tr>
+            {% endfor %}
+          {% else %}
+            <tr id="tr-empty">
+              <td colspan="5">
+                <div class="empty">
+                  <div class="empty-ico">📦</div>
+                  <p>Nenhum item no estoque. Adicione um novo item ou importe uma planilha.</p>
                 </div>
-                <div class="td-dim" style="margin-top:4px;">
-                  Total <strong style="color:var(--text)">{{ p.total_gastos_semana | int }}</strong>
-                  · Méd. {{ p.media_diaria }}/dia
-                  {% if p.tendencia is defined and p.tendencia != 0 %}
-                    {% if p.tendencia > 0 %}<span style="color:var(--red)">↑</span>
-                    {% else %}<span style="color:var(--green)">↓</span>{% endif %}
-                  {% endif %}
-                </div>
-              {% else %}
-                <span class="td-dim">Sem registros</span>
-              {% endif %}
-            </td>
-
-            <td>
-              {% if p.dias_restantes %}
-                <div class="prev-num">{{ p.dias_restantes | int }}<span class="prev-unit">d</span></div>
-                <div style="margin-top:3px;">
-                  <span class="conf" title="Confiança baseada nos dias registrados">{{ p.confianca }}% conf.</span>
-                </div>
-              {% else %}
-                <span class="td-dim">—</span>
-              {% endif %}
-            </td>
-
-            <td><span class="badge">{{ p.status }}</span></td>
-
-            <td>
-              <div style="display:flex;gap:4px;justify-content:center;">
-                <button class="btn-ico" title="Registrar gasto diário"
-                  onclick="openGasto({{ p.id }}, '{{ p.nome|replace("'", "\\'")|replace('"','') }}', '{{ p.unidade or '' }}')">📝</button>
-                <button class="btn-ico success" title="Ver histórico e previsão"
-                  onclick="openDetalhe({{ p.id }}, '{{ p.nome|replace("'", "\\'")|replace('"','') }}')">📊</button>
-                <a href="/deletar/{{ p.id }}" class="btn-ico danger" title="Apagar"
-                   onclick="return confirm('Apagar {{ p.nome }}?')">🗑</a>
-              </div>
-            </td>
-
-          </tr>
-        {% endfor %}
+              </td>
+            </tr>
+          {% endif %}
         </tbody>
       </table>
     </div>
-
-    {% else %}
-    <div class="empty">
-      <div class="empty-ico">📭</div>
-      <p>Nenhum item encontrado.<br>Importe uma planilha ou adicione manualmente.</p>
-    </div>
-    {% endif %}
   </div>
 
-</div><!-- /page -->
+</div>
 
-
-<!-- ══════════════════════════════════════════════════════════════
-     MODAIS
-══════════════════════════════════════════════════════════════ -->
-
-<!-- ── Modal: Novo Item ──────────────────────────────────────────── -->
+{# ── MODAL: Novo Item ─────────────────────────────────────────────────── #}
 <div class="overlay" id="m-add">
   <div class="modal">
     <div class="modal-hd">
-      <div class="modal-title">＋ Adicionar Item</div>
-      <button class="btn-ico" onclick="hide('m-add')">✕</button>
+      <div class="modal-title">＋ Novo Item</div>
+      <button type="button" class="btn-ico" onclick="fechaModal('m-add')">✕</button>
     </div>
-    <form action="/adicionar" method="post">
-      <div class="modal-body">
-        <div class="fg" style="margin-bottom:13px;">
-          <label>Nome do Item *</label>
-          <input type="text" name="nome" placeholder="Ex: Cimento CP II" required>
-        </div>
-        <div class="form-row" style="margin-bottom:13px;">
-          <div class="fg">
-            <label>Categoria</label>
-            <input type="text" name="categoria" placeholder="Ex: Pedreiro">
-          </div>
-          <div class="fg">
-            <label>Tipo</label>
-            <input type="text" name="tipo" placeholder="Ex: Material">
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="fg">
-            <label>Unidade de Medida</label>
-            <input type="text" name="unidade" placeholder="Ex: Sacos">
-          </div>
-          <div class="fg">
-            <label>Quantidade Atual</label>
-            <input type="number" name="qtd" placeholder="0" min="0" step="0.01">
-          </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="fg">
+          <label>Nome do Item</label>
+          <input type="text" id="add-nome" placeholder="ex. Parafuso Zinco M8">
         </div>
       </div>
-      <div class="modal-foot">
-        <button type="button" class="btn btn-ghost" onclick="hide('m-add')">Cancelar</button>
-        <button type="submit" class="btn btn-primary">Adicionar</button>
+      <div class="form-row">
+        <div class="fg">
+          <label>Categoria</label>
+          <select id="add-cat">
+            <option value="">— Selecionar —</option>
+            <option value="Administração">Administração</option>
+            <option value="Carpinteiro">Carpinteiro</option>
+            <option value="Ferramentas">Ferramentas</option>
+            <option value="Pedreiro">Pedreiro</option>
+          </select>
+        </div>
+        <div class="fg">
+          <label>Tipo</label>
+          <select id="add-tipo">
+            <option value="">— Selecionar —</option>
+            <option value="EPI">EPI</option>
+            <option value="Equipamento">Equipamento</option>
+            <option value="Material">Material</option>
+          </select>
+        </div>
+        <div class="fg">
+          <label>Unidade</label>
+          <input type="text" id="add-unid" placeholder="ex. un, kg, m">
+        </div>
       </div>
-    </form>
+      <div class="form-row">
+        <div class="fg">
+          <label>Quantidade Atual</label>
+          <input type="number" id="add-qtd" placeholder="0" min="0" step="0.01">
+        </div>
+      </div>
+      <p id="add-erro" style="color:var(--red);font-size:12px;margin-top:8px;display:none;"></p>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" onclick="fechaModal('m-add')">Cancelar</button>
+      <button type="button" class="btn btn-primary" id="add-btn" onclick="adicionarItem()">Adicionar</button>
+    </div>
   </div>
 </div>
 
-<!-- ── Modal: Registrar Gasto ────────────────────────────────────── -->
+{# ── MODAL: Registrar Gasto ───────────────────────────────────────────── #}
 <div class="overlay" id="m-gasto">
   <div class="modal">
     <div class="modal-hd">
       <div class="modal-title" id="gasto-title">📝 Registrar Gasto</div>
-      <button class="btn-ico" onclick="hide('m-gasto')">✕</button>
+      <button type="button" class="btn-ico" onclick="fechaModal('m-gasto')">✕</button>
     </div>
-    <form action="/registrar_gasto" method="post">
-      <input type="hidden" name="item_id" id="gasto-id">
-      <div class="modal-body">
-        <div class="form-row">
-          <div class="fg">
-            <label>Data</label>
-            <input type="date" name="data_gasto" id="gasto-data" value="{{ hoje }}">
-          </div>
-          <div class="fg">
-            <label id="gasto-unid-label">Quantidade Gasta</label>
-            <input type="number" name="quantidade" placeholder="0" min="0" step="0.01" required>
-          </div>
+    <div class="modal-body">
+      <input type="hidden" id="gasto-id">
+      <div class="form-row">
+        <div class="fg">
+          <label>Data do Gasto</label>
+          <input type="date" id="gasto-data" value="{{ hoje }}">
         </div>
-        <div class="sep"></div>
-        <p style="font-size:12px;color:var(--text3);line-height:1.7;">
-          ℹ Se já houver um registro para este dia, ele será substituído.<br>
-          Os gastos diários alimentam a previsão por <strong style="color:var(--text2)">regressão linear (OLS)</strong>.
-          Quanto mais dias registrados, maior a precisão e a confiança da estimativa.
-        </p>
+        <div class="fg">
+          <label id="gasto-unid-label">Quantidade Gasta</label>
+          <input type="number" id="gasto-qtd" placeholder="0" min="0" step="0.01">
+        </div>
       </div>
-      <div class="modal-foot">
-        <button type="button" class="btn btn-ghost" onclick="hide('m-gasto')">Cancelar</button>
-        <button type="submit" class="btn btn-primary">Salvar Gasto</button>
-      </div>
-    </form>
+      <div class="sep" style="margin:12px 0;"></div>
+      <p style="font-size:12px;color:var(--text3);line-height:1.7;">
+        ℹ Se já houver registro neste dia, será substituído. Os gastos alimentam a previsão por regressão linear com histórico de até 30 dias.
+      </p>
+      <p id="gasto-erro" style="color:var(--red);font-size:12px;margin-top:8px;display:none;"></p>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" onclick="fechaModal('m-gasto')">Cancelar</button>
+      <button type="button" class="btn btn-primary" onclick="salvarGasto()">Salvar Gasto</button>
+    </div>
   </div>
 </div>
 
-<!-- ── Modal: Detalhes / Histórico ───────────────────────────────── -->
+{# ── MODAL: Detalhes ──────────────────────────────────────────────────── #}
 <div class="overlay" id="m-detalhe">
   <div class="modal wide">
     <div class="modal-hd">
       <div class="modal-title" id="det-title">📊 Detalhes</div>
-      <button class="btn-ico" onclick="hide('m-detalhe')">✕</button>
+      <button type="button" class="btn-ico" onclick="fechaModal('m-detalhe')">✕</button>
     </div>
     <div class="modal-body" id="det-body">
       <p style="color:var(--text2);text-align:center;padding:30px 0;">Carregando…</p>
     </div>
-    <div class="modal-foot" id="det-foot">
-      <button class="btn btn-ghost" onclick="hide('m-detalhe')">Fechar</button>
-    </div>
   </div>
 </div>
 
-<!-- ── Modal: Fechar Semana ──────────────────────────────────────── -->
+{# ── MODAL: Fechar Semana — mantém POST pois é ação destrutiva que gera planilha #}
 <div class="overlay" id="m-semana">
   <div class="modal">
     <div class="modal-hd">
-      <div class="modal-title">⚡ Fechar Semana</div>
-      <button class="btn-ico" onclick="hide('m-semana')">✕</button>
+      <div class="modal-title">📋 Fechar Semana</div>
+      <button type="button" class="btn-ico" onclick="fechaModal('m-semana')">✕</button>
     </div>
     <div class="modal-body">
       <p style="color:var(--text2);font-size:13.5px;margin-bottom:14px;">
-        Esta ação irá <strong style="color:var(--accent)">somar todos os gastos diários registrados</strong>,
-        descontar do estoque atual de cada item e
-        <strong style="color:var(--red)">limpar os registros</strong> para a próxima semana.
+        Esta ação irá somar todos os gastos abertos e descontar do estoque de cada item.
       </p>
       <div class="week-info">
-        ✅ &nbsp;Gastos somados e descontados do estoque de cada item<br>
-        🔄 &nbsp;Registros diários apagados (pronto para nova semana)<br>
-        📊 &nbsp;A previsão será recalculada conforme novos dados entrarem
+        ✅ Gastos abertos descontados do estoque<br>
+        📊 Planilha .xlsx pronta para download
       </div>
     </div>
     <div class="modal-foot">
-      <button class="btn btn-ghost" onclick="hide('m-semana')">Cancelar</button>
+      <button type="button" class="btn btn-ghost" onclick="fechaModal('m-semana')">Cancelar</button>
       <form action="/fechar_semana_todos" method="post" style="display:inline;">
-        <button type="submit" class="btn btn-primary"
-          onclick="return confirm('Confirmar fechamento de semana para todos os itens?')">
-          ✅ Confirmar Fechamento
-        </button>
+        <button type="submit" class="btn btn-primary">✅ Confirmar e Gerar Planilha</button>
       </form>
     </div>
   </div>
 </div>
 
-
-<!-- ═══════════════════════════════ SCRIPTS ══════════════════════════════ -->
-<script>
-/* ── Modais ─────────────────────────────────────────────────────────── */
-function show(id) {
-  document.getElementById(id).classList.add('on');
-  document.body.style.overflow = 'hidden';
-}
-function hide(id) {
-  document.getElementById(id).classList.remove('on');
-  document.body.style.overflow = '';
-}
-
-document.querySelectorAll('.overlay').forEach(el => {
-  el.addEventListener('click', e => { if (e.target === el) hide(el.id); });
-});
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape')
-    document.querySelectorAll('.overlay.on').forEach(el => hide(el.id));
-});
-
-/* ── Gasto diário ────────────────────────────────────────────────── */
-function openGasto(id, nome, unid) {
-  document.getElementById('gasto-id').value = id;
-  document.getElementById('gasto-title').textContent = '📝 Gasto — ' + nome;
-  document.getElementById('gasto-unid-label').textContent =
-    'Quantidade Gasta' + (unid ? ' (' + unid + ')' : '');
-  show('m-gasto');
-}
-
-/* ── Modal de Detalhes ───────────────────────────────────────────── */
-async function openDetalhe(id, nome) {
-  document.getElementById('det-title').textContent = '📊 ' + nome;
-  document.getElementById('det-body').innerHTML =
-    '<p style="color:var(--text2);text-align:center;padding:30px 0;">Carregando…</p>';
-  document.getElementById('det-foot').innerHTML =
-    '<button class="btn btn-ghost" onclick="hide(\'m-detalhe\')">Fechar</button>';
-  show('m-detalhe');
-
-  try {
-    const res  = await fetch('/api/item/' + id);
-    const data = await res.json();
-    renderDetalhe(data);
-  } catch(e) {
-    document.getElementById('det-body').innerHTML =
-      '<p style="color:var(--red);text-align:center;padding:20px 0;">Erro ao carregar dados.</p>';
-  }
-}
-
-function renderDetalhe(data) {
-  const { item, gastos, previsao: p } = data;
-  const qtd   = parseFloat(item.qtd_atual) || 0;
-  const total = gastos.reduce((s, g) => s + parseFloat(g.quantidade), 0);
-  const dias  = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
-
-  const infoHtml = `
-    <div class="info-grid">
-      <div class="info-box">
-        <div class="info-val">${Math.round(qtd)}</div>
-        <div class="info-lbl">Qtd. Atual${item.unidade ? ' ('+item.unidade+')' : ''}</div>
+{# ── MODAL: Divergências ──────────────────────────────────────────────── #}
+<div class="overlay" id="m-div">
+  <div class="modal wide">
+    <div class="modal-hd">
+      <div class="modal-title">Divergências de Quantidade</div>
+      <button type="button" class="btn-ico" onclick="fechaModal('m-div')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="div-aviso">
+        A planilha contém quantidades diferentes das registradas no sistema. Marque os itens que deseja substituir:
       </div>
-      <div class="info-box">
-        <div class="info-val">${p.dias_restantes ? Math.round(p.dias_restantes) : '—'}</div>
-        <div class="info-lbl">Dias Restantes</div>
+      
+      <div class="div-controls" style="display: flex; align-items: center; min-height: 38px;">
+        <label class="div-check-label">
+          <input type="checkbox" id="div-check-all" onchange="marcarTodos()">
+          <span>Selecionar todos</span>
+        </label>
       </div>
-      <div class="info-box">
-        <div class="info-val">${p.confianca || 0}%</div>
-        <div class="info-lbl">Confiança</div>
+
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th style="width:40px;"></th>
+              <th>Item</th>
+              <th>Qtd. Sistema</th>
+              <th>Qtd. Planilha</th>
+              <th>Diferença</th>
+            </tr>
+          </thead>
+          <tbody id="div-tbody"></tbody>
+        </table>
       </div>
     </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px;font-size:12.5px;color:var(--text2);">
-      <div>Média/dia: <strong style="color:var(--text)">${p.media_diaria}</strong></div>
-      <div>Desvio padrão: <strong style="color:var(--text)">${p.desvio_padrao}</strong></div>
-      <div>Tendência:
-        <strong style="color:${parseFloat(p.tendencia||0) > 0 ? 'var(--red)' : parseFloat(p.tendencia||0) < 0 ? 'var(--green)' : 'var(--text3)'}">
-          ${parseFloat(p.tendencia||0) > 0 ? '↑' : parseFloat(p.tendencia||0) < 0 ? '↓' : '→'}
-          ${Math.abs(parseFloat(p.tendencia||0))}/dia
-        </strong>
-      </div>
-    </div>`;
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" onclick="fechaModal('m-div')"> FECHAR </button>
+      <button type="button" class="btn btn-primary" onclick="aplicarDiv()">✅ Alterar Dados Selecionados</button>
+    </div>
+  </div>
+</div>
 
-  let gastosHtml = '';
-  if (gastos.length > 0) {
-    gastosHtml = `
-      <div class="sep"></div>
-      <div class="panel-hd" style="margin-bottom:8px;">📅 Gastos Esta Semana</div>
-      <table class="g-tbl">
-        <thead><tr><th>Dia</th><th>Data</th><th>Quantidade</th><th>Barra</th></tr></thead>
-        <tbody>
-          ${gastos.map(g => {
-            const pct  = total > 0 ? Math.round((parseFloat(g.quantidade) / total) * 100) : 0;
-            const d    = new Date(g.data + 'T12:00:00');
-            return `<tr>
-              <td style="color:var(--text2)">${dias[d.getDay()]}</td>
-              <td>${g.data}</td>
-              <td><strong>${g.quantidade}</strong> ${item.unidade || ''}</td>
-              <td>
-                <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3);">
-                  <div style="width:${Math.min(pct,80)}px;height:5px;background:var(--accent);border-radius:3px;opacity:.7;"></div>
-                  ${pct}%
-                </div>
-              </td>
-            </tr>`;
-          }).join('')}
-          <tr style="border-top:1px solid var(--border2);">
-            <td colspan="2" style="color:var(--text2);font-weight:600;">Total da semana</td>
-            <td colspan="2"><strong style="color:var(--accent)">${total.toFixed(1)}</strong> ${item.unidade || ''}</td>
-          </tr>
-        </tbody>
-      </table>`;
+{# ── MODAL: Planilha ──────────────────────────────────────────────────── #}
+<div class="overlay" id="m-planilha">
+  <div class="modal wide">
+    <div class="modal-hd">
+      <div class="modal-title" id="plan-title">📊 Planilha Gerada</div>
+      <button type="button" class="btn-ico" onclick="fechaModal('m-planilha')">✕</button>
+    </div>
+    <div class="modal-body" id="plan-body">
+      <p style="color:var(--text2);text-align:center;padding:20px 0;">Carregando…</p>
+    </div>
+    <div class="modal-foot" id="plan-foot"></div>
+  </div>
+</div>
+
+{# ── MODAL: Histórico de Planilhas ────────────────────────────────────── #}
+<div class="overlay" id="m-snaps">
+  <div class="modal">
+    <div class="modal-hd">
+      <div class="modal-title">📋 Histórico de Planilhas</div>
+      <button type="button" class="btn-ico" onclick="fechaModal('m-snaps')">✕</button>
+    </div>
+    <div class="modal-body">
+      <ul class="snap-list" id="snap-list">
+        <li class="snap-loading">Carregando…</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════
+   ESTADO & UTILITÁRIOS
+═══════════════════════════════════════════════════════════════════ */
+var divData = {};
+
+function abreModal(id) {
+  var el = document.getElementById(id);
+  if (el) el.classList.add('open');
+}
+
+function fechaModal(id) {
+  var el = document.getElementById(id);
+  if (el) el.classList.remove('open');
+}
+
+/** Recalcula os 3 KPIs contando as linhas visíveis da tabela. */
+function atualizaKPIs() {
+  var linhas = document.querySelectorAll('#tbl-body tr[data-id]');
+  var total = linhas.length;
+  var criticos = 0;
+  var alertas = 0;
+  linhas.forEach(function(tr) {
+    if (tr.classList.contains('risco-critico')) criticos++;
+    else if (tr.classList.contains('risco-proximo')) alertas++;
+  });
+  var elTotal = document.getElementById('kpi-total');
+  var elCrit  = document.getElementById('kpi-criticos');
+  var elAlert = document.getElementById('kpi-alertas');
+  if (elTotal) elTotal.textContent = total;
+  if (elCrit)  elCrit.textContent  = criticos;
+  if (elAlert) elAlert.textContent = alertas;
+}
+
+/** Exibe/oculta o estado vazio na tabela. */
+function verificaVazio() {
+  var tbody  = document.getElementById('tbl-body');
+  var linhas = tbody.querySelectorAll('tr[data-id]');
+  var trEmpty = document.getElementById('tr-empty');
+  if (linhas.length === 0) {
+    if (!trEmpty) {
+      var tr = document.createElement('tr');
+      tr.id = 'tr-empty';
+      tr.innerHTML = '<td colspan="5"><div class="empty"><div class="empty-ico">📦</div><p>Nenhum item no estoque. Adicione um novo item ou importe uma planilha.</p></div></td>';
+      tbody.appendChild(tr);
+    }
   } else {
-    gastosHtml = `
-      <div class="sep"></div>
-      <p style="color:var(--text3);font-size:13px;text-align:center;padding:20px 0;">
-        Nenhum gasto registrado esta semana.<br>
-        Use o botão 📝 para inserir gastos diários.
-      </p>`;
+    if (trEmpty) trEmpty.remove();
+  }
+}
+
+/** Mostra um flash temporário sem reload. */
+function showFlash(msg, warn) {
+  var wrap = document.getElementById('flash-wrap');
+  if (!wrap) {
+    wrap = document.createElement('div');
+    wrap.id = 'flash-wrap';
+    wrap.className = 'flash-wrap';
+    var page = document.querySelector('.page');
+    page.insertBefore(wrap, page.firstChild);
+  }
+  var div = document.createElement('div');
+  div.className = 'flash' + (warn ? ' flash-warn' : '');
+  div.textContent = msg;
+  wrap.appendChild(div);
+  setTimeout(function() {
+    div.style.transition = 'opacity 0.5s';
+    div.style.opacity = '0';
+    setTimeout(function() { div.remove(); }, 500);
+  }, 4000);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   FILTROS (100% local, sem servidor)
+═══════════════════════════════════════════════════════════════════ */
+function filtrarTabelaLocal() {
+  var textoBusca   = document.getElementById('buscaNome').value.toLowerCase().trim();
+  var categoriaBusca = document.getElementById('filtroCat').value.toLowerCase();
+  var tipoBusca    = document.getElementById('filtroTipo').value.toLowerCase();
+  var riscoBusca   = document.getElementById('filtroRisco').value;
+  var linhas = document.querySelectorAll('#tbl-body tr[data-id]');
+  linhas.forEach(function(linha) {
+    var celNome  = linha.querySelector('td:first-child');
+    var txtNome  = celNome ? celNome.textContent.toLowerCase() : '';
+    var txtLinha = linha.textContent.toLowerCase();
+    var ok = (!textoBusca    || txtNome.includes(textoBusca))
+          && (!categoriaBusca || txtLinha.includes(categoriaBusca))
+          && (!tipoBusca      || txtLinha.includes(tipoBusca))
+          && (!riscoBusca     || linha.classList.contains(riscoBusca));
+    linha.style.display = ok ? '' : 'none';
+  });
+}
+
+function limparTodosOsFiltros() {
+  document.getElementById('buscaNome').value = '';
+  document.getElementById('filtroCat').selectedIndex  = 0;
+  document.getElementById('filtroTipo').selectedIndex = 0;
+  document.getElementById('filtroRisco').selectedIndex = 0;
+  document.querySelectorAll('#tbl-body tr[data-id]').forEach(function(tr) {
+    tr.style.display = '';
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   ADICIONAR ITEM (fetch → inserção no DOM)
+═══════════════════════════════════════════════════════════════════ */
+async function adicionarItem() {
+  var nome  = document.getElementById('add-nome').value.trim();
+  var cat   = document.getElementById('add-cat').value;
+  var tipo  = document.getElementById('add-tipo').value;
+  var unid  = document.getElementById('add-unid').value.trim();
+  var qtd   = parseFloat(document.getElementById('add-qtd').value) || 0;
+  var erro  = document.getElementById('add-erro');
+
+  if (!nome || !cat || !tipo || !unid) {
+    erro.textContent = 'Preencha todos os campos obrigatórios.';
+    erro.style.display = 'block';
+    return;
+  }
+  erro.style.display = 'none';
+
+  var btn = document.getElementById('add-btn');
+  btn.disabled = true;
+  btn.textContent = 'Adicionando…';
+
+  var fd = new FormData();
+  fd.append('nome', nome);
+  fd.append('categoria', cat);
+  fd.append('tipo', tipo);
+  fd.append('unidade', unid);
+  fd.append('qtd', qtd);
+
+  try {
+    var res  = await fetch('/adicionar', { method: 'POST', body: fd });
+    var data = await res.json();
+
+    if (!data.ok) {
+      erro.textContent = data.erro || 'Erro ao adicionar item.';
+      erro.style.display = 'block';
+      return;
+    }
+
+    /* Insere a linha na tabela sem reload */
+    insereLinhaNaTabela(data.item);
+    atualizaKPIs();
+    verificaVazio();
+
+    /* Limpa o formulário */
+    document.getElementById('add-nome').value = '';
+    document.getElementById('add-cat').selectedIndex  = 0;
+    document.getElementById('add-tipo').selectedIndex = 0;
+    document.getElementById('add-unid').value = '';
+    document.getElementById('add-qtd').value  = '';
+
+    fechaModal('m-add');
+    showFlash('✅ Item "' + nome + '" adicionado com sucesso.');
+  } catch(e) {
+    erro.textContent = 'Erro de conexão.';
+    erro.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Adicionar';
+  }
+}
+
+/** Cria e insere um <tr> no tbody com os dados do item retornado pelo servidor. */
+function insereLinhaNaTabela(item) {
+  var tbody = document.getElementById('tbl-body');
+  var qtdFmt = parseFloat(item.qtd_atual).toFixed(2);
+  var classeRisco = item.classe_risco || 'risco-ok';
+  var prevStatus  = item.prev_status  || 'OK';
+
+  var tr = document.createElement('tr');
+  tr.className = classeRisco;
+  tr.setAttribute('data-id', item.id);
+  tr.innerHTML =
+    '<td class="td-nome"><strong>' + escHtml(item.nome) + '</strong></td>' +
+    '<td><span class="tag">' + escHtml(item.categoria) + '</span><div class="td-dim">' + escHtml(item.tipo) + '</div></td>' +
+    '<td style="text-align:center;"><span class="td-num qtd-val">' + qtdFmt + '</span> <span class="td-dim">' + escHtml(item.unidade) + '</span></td>' +
+    '<td style="text-align:center;"><span class="conf ' + classeRisco + '">' + escHtml(prevStatus) + '</span></td>' +
+    '<td><div style="display:flex;gap:6px;justify-content:center;align-items:center;">' +
+      '<button type="button" class="btn btn-ico" title="Detalhes" onclick="abreDetalhe(' + item.id + ', \'' + escJs(item.nome) + '\')">🔍</button>' +
+      '<button type="button" class="btn btn-ico" title="Registrar Gasto" onclick="abreGasto(' + item.id + ', \'' + escJs(item.nome) + '\', \'' + escJs(item.unidade) + '\')">📝</button>' +
+      '<button type="button" class="btn btn-ico" title="Deletar" onclick="deletarItem(this, ' + item.id + ')">🗑️</button>' +
+    '</div></td>';
+  tbody.appendChild(tr);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   DELETAR ITEM (fetch → remove linha do DOM)
+═══════════════════════════════════════════════════════════════════ */
+function deletarItem(botao, id) {
+  if (!confirm('Confirmar exclusão?')) return;
+  var tr = botao.closest('tr');
+  tr.style.opacity = '0.4';
+  fetch('/deletar/' + id, { method: 'GET' })
+    .then(function() {
+      tr.remove();
+      atualizaKPIs();
+      verificaVazio();
+    })
+    .catch(function() {
+      tr.style.opacity = '';
+      showFlash('⚠ Erro de conexão. Tente novamente.', true);
+    });
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   REGISTRAR GASTO (fetch → atualiza qtd na linha da tabela)
+═══════════════════════════════════════════════════════════════════ */
+function abreGasto(itemId, nome, unidade) {
+  document.getElementById('gasto-id').value = itemId;
+  document.getElementById('gasto-title').textContent = '📝 Registrar Gasto — ' + nome;
+  document.getElementById('gasto-unid-label').textContent = 'Quantidade Gasta (' + unidade + ')';
+  document.getElementById('gasto-qtd').value = '';
+  document.getElementById('gasto-erro').style.display = 'none';
+  abreModal('m-gasto');
+}
+
+async function salvarGasto() {
+  var id   = document.getElementById('gasto-id').value;
+  var data = document.getElementById('gasto-data').value;
+  var qtd  = document.getElementById('gasto-qtd').value;
+  var erro = document.getElementById('gasto-erro');
+
+  if (!qtd || parseFloat(qtd) <= 0) {
+    erro.textContent = 'Informe uma quantidade válida.';
+    erro.style.display = 'block';
+    return;
+  }
+  erro.style.display = 'none';
+
+  var fd = new FormData();
+  fd.append('item_id', id);
+  fd.append('data_gasto', data);
+  fd.append('quantidade', qtd);
+
+  try {
+    var res  = await fetch('/registrar_gasto', { method: 'POST', body: fd });
+    var resp = await res.json();
+
+    if (!resp.ok) {
+      erro.textContent = resp.erro || 'Erro ao registrar gasto.';
+      erro.style.display = 'block';
+      return;
+    }
+
+    /* Atualiza a célula de quantidade na tabela */
+    var tr = document.querySelector('#tbl-body tr[data-id="' + id + '"]');
+    if (tr && resp.qtd_atual !== undefined) {
+      var celQtd = tr.querySelector('.qtd-val');
+      if (celQtd) celQtd.textContent = parseFloat(resp.qtd_atual).toFixed(2);
+    }
+
+    /* Atualiza classe de risco e badge de previsão se o servidor retornar */
+    if (tr && resp.classe_risco) {
+      tr.className = resp.classe_risco;
+      tr.setAttribute('data-id', id); /* mantém o atributo */
+      var confEl = tr.querySelector('.conf');
+      if (confEl) {
+        confEl.className = 'conf ' + resp.classe_risco;
+        confEl.textContent = resp.prev_status || '';
+      }
+      atualizaKPIs();
+    }
+
+    fechaModal('m-gasto');
+    showFlash('✅ Gasto registrado com sucesso.');
+  } catch(e) {
+    erro.textContent = 'Erro de conexão.';
+    erro.style.display = 'block';
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   DETALHES DO ITEM (fetch existente, mantido)
+═══════════════════════════════════════════════════════════════════ */
+async function abreDetalhe(itemId, nome) {
+  var body    = document.getElementById('det-body');
+  var titleEl = document.getElementById('det-title');
+  if (!body) return;
+  if (titleEl) titleEl.textContent = '📊 Detalhes — ' + nome;
+  body.innerHTML = '<p style="color:var(--text2);text-align:center;padding:30px 0;">Carregando…</p>';
+  abreModal('m-detalhe');
+  try {
+    var res  = await fetch('/api/item/' + itemId);
+    var data = await res.json();
+    var item  = data.item;
+    var prev  = data.previsao;
+    var gastos = data.gastos || [];
+    var histHtml = gastos.length > 0
+      ? gastos.map(function(g) {
+          return '<tr>' +
+            '<td style="text-align:center;font-size:12px;">' + g.data + '</td>' +
+            '<td style="text-align:center;font-size:12px;">' + g.quantidade + ' ' + item.unidade + '</td>' +
+            '<td style="text-align:center;font-size:11px;color:' + (g.fechado ? 'var(--green)' : 'var(--orange)') + ';">' +
+              (g.fechado ? '✓ Fechado' : '⊙ Aberto') +
+            '</td></tr>';
+        }).join('')
+      : '<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:20px 0;">Sem registros</td></tr>';
+    var corRisco = prev.classe.indexOf('critico') >= 0 ? 'red'
+                 : prev.classe.indexOf('proximo') >= 0 ? 'orange' : 'green';
+    body.innerHTML =
+      '<div class="det-stats">' +
+        '<div class="info-box"><div class="info-lbl">Quantidade Atual</div><div class="info-val">' + item.qtd_atual + ' ' + item.unidade + '</div></div>' +
+        '<div class="info-box"><div class="info-lbl">Previsão</div><div class="info-val" style="color:var(--' + corRisco + ');">' + prev.status + '</div></div>' +
+        '<div class="info-box"><div class="info-lbl">Dias Restantes</div><div class="info-val">' + (prev.dias_restantes ? prev.dias_restantes + 'd' : '—') + '</div></div>' +
+        '<div class="info-box"><div class="info-lbl">Confiança</div><div class="info-val">' + prev.confianca + '%</div></div>' +
+      '</div>' +
+      '<div class="sep" style="margin:16px 0;"></div>' +
+      '<div style="font-size:12px;color:var(--text2);margin-bottom:14px;"><strong style="color:var(--text);">Histórico de Gastos (últimos 30 dias)</strong></div>' +
+      '<div class="tbl-wrap"><table class="tbl"><thead><tr style="font-size:11px;">' +
+        '<th style="text-align:center;">Data</th><th style="text-align:center;">Quantidade</th><th style="text-align:center;">Status</th>' +
+      '</tr></thead><tbody style="font-size:12px;">' + histHtml + '</tbody></table></div>';
+  } catch(e) {
+    body.innerHTML = '<p style="color:var(--red);text-align:center;padding:20px 0;">Erro ao carregar detalhes.</p>';
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   PLANILHAS & HISTÓRICO (fetch existente, mantido)
+═══════════════════════════════════════════════════════════════════ */
+function abreDetalhePlanilha(snapId, nomeArq, geradoEm) {
+  var titleEl = document.getElementById('plan-title');
+  var bodyEl  = document.getElementById('plan-body');
+  var footEl  = document.getElementById('plan-foot');
+  if (titleEl) titleEl.textContent = '📊 Planilha — ' + nomeArq;
+  if (bodyEl)  bodyEl.innerHTML =
+    '<div class="plan-detalhe-info">' +
+      '<div class="plan-info-row"><span class="plan-info-label">📁 Arquivo</span><span class="plan-info-value">' + nomeArq + '</span></div>' +
+      '<div class="plan-info-row"><span class="plan-info-label">🕐 Gerado em</span><span class="plan-info-value">' + geradoEm + '</span></div>' +
+    '</div>';
+  if (footEl) footEl.innerHTML =
+    '<button type="button" class="btn btn-ghost" onclick="fechaModal(\'m-planilha\')">Fechar</button>' +
+    '<a href="/download_planilha/' + snapId + '" class="btn btn-download">⬇ Baixar Planilha .xlsx</a>';
+}
+
+async function abreHistorico() {
+  var list = document.getElementById('snap-list');
+  if (!list) return;
+  list.innerHTML = '<li class="snap-loading">Carregando…</li>';
+  abreModal('m-snaps');
+  try {
+    var res  = await fetch('/api/snapshots');
+    var data = await res.json();
+    if (data.length === 0) {
+      list.innerHTML = '<li class="snap-loading">Nenhuma planilha gerada ainda.</li>';
+      return;
+    }
+    list.innerHTML = data.map(function(s) {
+      return '<li class="snap-item">' +
+        '<div><div class="snap-nome">📊 ' + s.arquivo_nome + '</div><div class="snap-data">Gerada em ' + s.gerado_em + '</div></div>' +
+        '<div style="display:flex;gap:6px;">' +
+          '<button type="button" class="btn btn-ghost btn-sm" onclick="fechaModal(\'m-snaps\'); abreModal(\'m-planilha\'); abreDetalhePlanilha(' + s.id + ',\'' + s.arquivo_nome + '\',\'' + s.gerado_em + '\')">🔍 Ver</button>' +
+          '<a href="/download_planilha/' + s.id + '" class="btn btn-download btn-sm">⬇ Baixar</a>' +
+        '</div></li>';
+    }).join('');
+  } catch(e) {
+    list.innerHTML = '<li class="snap-loading" style="color:var(--red);">Erro ao carregar.</li>';
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   DIVERGÊNCIAS (fetch existente, mantido)
+═══════════════════════════════════════════════════════════════════ */
+function mostraDivergencias(divs) {
+  var tbody = document.getElementById('div-tbody');
+  if (!tbody || !divs || divs.length === 0) return;
+  divData = {};
+  tbody.innerHTML = divs.map(function(d) {
+    var dif    = parseFloat(d.diferenca);
+    var difCls = dif > 0 ? 'div-pos' : 'div-neg';
+    var sinal  = dif > 0 ? '+' : '';
+    var rowId  = 'divr-' + Math.random().toString(36).substr(2, 9);
+    divData[rowId] = d;
+    return '<tr id="' + rowId + '">' +
+      '<td style="width:40px;text-align:center;"><input type="checkbox" class="div-item-check" data-row-id="' + rowId + '"></td>' +
+      '<td><strong>' + d.nome + '</strong></td>' +
+      '<td class="td-num">' + d.qtd_sistema + '</td>' +
+      '<td class="td-num">' + d.qtd_planilha + '</td>' +
+      '<td><span class="' + difCls + '">' + sinal + d.diferenca + '</span></td>' +
+    '</tr>';
+  }).join('');
+}
+
+function marcarTodos() {
+  var checkAll = document.getElementById('div-check-all');
+  document.querySelectorAll('.div-item-check').forEach(function(ch) {
+    ch.checked = checkAll.checked;
+  });
+}
+
+async function aplicarDiv() {
+  var checks = document.querySelectorAll('.div-item-check:checked');
+  if (checks.length === 0) { alert('Nenhum item selecionado.'); return; }
+  var processadas = 0;
+  for (var i = 0; i < checks.length; i++) {
+    var rowId = checks[i].getAttribute('data-row-id');
+    var d = divData[rowId];
+    if (!d) continue;
+    var fd = new FormData();
+    fd.append('nome', d.nome);
+    fd.append('nova_qtd', d.qtd_planilha);
+    try {
+      var res  = await fetch('/aceitar_divergencia', { method: 'POST', body: fd });
+      var data = await res.json();
+      if (data.ok) {
+        /* Marca a linha do modal como aceita */
+        var row = document.getElementById(rowId);
+        if (row) row.innerHTML = '<td colspan="5" style="color:var(--green);text-align:center;padding:10px;font-size:13px;">✅ <strong>' + d.nome + '</strong> — atualizado para <strong>' + d.qtd_planilha + '</strong></td>';
+
+        /* Atualiza a quantidade na tabela de estoque sem recarregar */
+        document.querySelectorAll('#tbl-body tr[data-id]').forEach(function(tr) {
+          var tdNome = tr.querySelector('.td-nome');
+          if (tdNome && tdNome.textContent.trim().toUpperCase() === String(d.nome).trim().toUpperCase()) {
+            var spanQtd = tr.querySelector('.qtd-val');
+            if (spanQtd) spanQtd.textContent = parseFloat(d.qtd_planilha).toFixed(2);
+          }
+        });
+
+        processadas++;
+      }
+    } catch(e) {}
+  }
+  atualizaKPIs();
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   UTILITÁRIOS DE ESCAPE
+═══════════════════════════════════════════════════════════════════ */
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function escJs(str) {
+  return String(str).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   INIT
+═══════════════════════════════════════════════════════════════════ */
+document.addEventListener('DOMContentLoaded', function() {
+
+  /* Drag & drop da drop-zone */
+  var dz   = document.getElementById('dz');
+  var finp = document.getElementById('file-inp');
+  if (finp) {
+    finp.addEventListener('change', function() {
+      if (finp.files.length > 0) {
+        var lbl = document.getElementById('dz-label');
+        var btn = document.getElementById('sync-btn');
+        if (lbl) lbl.innerHTML = '<strong>' + finp.files[0].name + '</strong> selecionado';
+        if (btn) btn.disabled = false;
+      }
+    });
+  }
+  if (dz) {
+    dz.addEventListener('dragover',  function(e) { e.preventDefault(); dz.classList.add('over'); });
+    dz.addEventListener('dragleave', function()  { dz.classList.remove('over'); });
+    dz.addEventListener('drop', function(e) {
+      e.preventDefault();
+      dz.classList.remove('over');
+      var file = e.dataTransfer.files[0];
+      if (file && file.name.endsWith('.xlsx')) {
+        var dt = new DataTransfer();
+        dt.items.add(file);
+        finp.files = dt.files;
+        var lbl = document.getElementById('dz-label');
+        var btn = document.getElementById('sync-btn');
+        if (lbl) lbl.innerHTML = '<strong>' + file.name + '</strong> pronto';
+        if (btn) btn.disabled = false;
+      }
+    });
   }
 
-  document.getElementById('det-body').innerHTML = infoHtml + gastosHtml;
-  document.getElementById('det-foot').innerHTML = `
-    <button class="btn btn-ghost" onclick="hide('m-detalhe')">Fechar</button>
-    <form action="/fechar_semana/${item.id}" method="post" style="display:inline;">
-      <button type="submit" class="btn btn-red btn-sm"
-        onclick="return confirm('Fechar semana de ${item.nome.replace(/'/g,"\\'")} e descontar ${total.toFixed(1)} ${item.unidade || ''}?')">
-        🔄 Fechar Semana deste Item
-      </button>
-    </form>`;
-}
+  /* Auto-remove flashes de sucesso após 6s */
+  setTimeout(function() {
+    document.querySelectorAll('.flash:not(.flash-warn)').forEach(function(el) {
+      el.style.transition = 'opacity 0.5s';
+      el.style.opacity = '0';
+      setTimeout(function() { el.remove(); }, 500);
+    });
+  }, 6000);
 
-/* ── Drop zone ───────────────────────────────────────────────────── */
-const dz   = document.getElementById('dz');
-const finp = document.getElementById('file-inp');
-const lbl  = document.getElementById('dz-label');
-const sbtn = document.getElementById('sync-btn');
-
-if (finp) {
-  finp.addEventListener('change', () => {
-    if (finp.files.length) {
-      lbl.innerHTML = `<strong>${finp.files[0].name}</strong> selecionado`;
-      sbtn.disabled = false;
-    }
-  });
-}
-if (dz) {
-  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
-  dz.addEventListener('dragleave', () => dz.classList.remove('over'));
-  dz.addEventListener('drop', e => {
-    e.preventDefault(); dz.classList.remove('over');
-    const file = e.dataTransfer.files[0];
-    if (file && file.name.endsWith('.xlsx')) {
-      const dt = new DataTransfer();
-      dt.items.add(file);
-      finp.files = dt.files;
-      lbl.innerHTML = `<strong>${file.name}</strong> pronto para sincronizar`;
-      sbtn.disabled = false;
-    }
-  });
-}
-
-/* ── Auto-fechar flash ───────────────────────────────────────────── */
-setTimeout(() => {
-  document.querySelectorAll('.flash').forEach(el => {
-    el.style.transition = 'opacity .5s';
-    el.style.opacity    = '0';
-    setTimeout(() => el.remove(), 500);
-  });
-}, 5000);
-
-/* ── Tema Claro / Escuro ─────────────────────────────────────────── */
-function toggleTheme() {
-  const isLight = document.documentElement.classList.toggle('light');
-  document.getElementById('theme-icon').textContent = isLight ? '🌙' : '☀';
-  localStorage.setItem('almox-theme', isLight ? 'light' : 'dark');
-}
-
-// Aplica o tema salvo ao carregar a página
-(function () {
-  if (localStorage.getItem('almox-theme') === 'light') {
-    document.documentElement.classList.add('light');
-    const icon = document.getElementById('theme-icon');
-    if (icon) icon.textContent = '🌙';
-  }
-})();
+  /* KPI inicial a partir do DOM (sem depender de variáveis Jinja no JS) */
+  atualizaKPIs();
+});
 </script>
 
 </body>
-</html>

@@ -1,5 +1,11 @@
 {
   "rewrites": [
     { "source": "/(.*)", "destination": "api/index" }
+  ],
+  "crons": [
+    {
+      "path": "/api/disparar-tarefa",
+      "schedule": "0 20 * * 5"
+    }
   ]
 }
