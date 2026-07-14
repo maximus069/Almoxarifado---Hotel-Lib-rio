@@ -45,12 +45,14 @@ def init_db():
         cur = conn.cursor()
         cur.execute('''
             CREATE TABLE IF NOT EXISTS itens (
-                id        SERIAL PRIMARY KEY,
-                nome      TEXT NOT NULL UNIQUE,
-                categoria TEXT,
-                tipo      TEXT,
-                unidade   TEXT,
-                qtd_atual NUMERIC DEFAULT 0
+                id          SERIAL PRIMARY KEY,
+                nome        TEXT NOT NULL UNIQUE,
+                categoria   TEXT,
+                tipo        TEXT,
+                unidade     TEXT,
+                qtd_atual   NUMERIC DEFAULT 0,
+                ca          TEXT,
+                nivel_gasto TEXT NOT NULL DEFAULT 'GASTO ELEVADO'
             );
             CREATE TABLE IF NOT EXISTS gastos_diarios (
                 id         SERIAL PRIMARY KEY,
@@ -78,9 +80,64 @@ def init_db():
                 chave TEXT PRIMARY KEY,
                 valor TEXT
             );
+            CREATE TABLE IF NOT EXISTS retiradas_sem_gasto (
+                id           SERIAL PRIMARY KEY,
+                item_id      INTEGER NOT NULL REFERENCES itens(id) ON DELETE CASCADE,
+                data         DATE    NOT NULL DEFAULT CURRENT_DATE,
+                quantidade   NUMERIC NOT NULL DEFAULT 1,
+                responsavel  TEXT    NOT NULL,
+                registrado_em TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+        ''')
+        # Migração segura para bancos já existentes (não quebra dados antigos):
+        # itens cadastrados antes deste update recebem nivel_gasto = GASTO ELEVADO,
+        # preservando exatamente o comportamento de previsão que já tinham.
+        cur.execute('''
+            ALTER TABLE itens ADD COLUMN IF NOT EXISTS ca TEXT;
+            ALTER TABLE itens ADD COLUMN IF NOT EXISTS nivel_gasto TEXT NOT NULL DEFAULT 'GASTO ELEVADO';
         ''')
 
 init_db()
+
+
+# ══════════════════════════════════════════════════════
+#  NÍVEIS DE GASTO — classificação e fatores de atenuação
+#
+#  Cada nível pondera o quanto a média de consumo projetada
+#  realmente pressiona o estoque na previsão (calcular_previsao).
+#  GASTO ELEVADO  → fator 1.0  (comportamento original, sem mudança)
+#  GASTO MODERADO → fator 0.7  (suaviza a curva, mais dias de margem)
+#  GASTO BAIXO    → fator 0.4  (efeito bem mais conservador)
+#  SEM GASTO      → não entra na equação (ver calcular_previsao)
+# ══════════════════════════════════════════════════════
+
+NIVEIS_GASTO = ('GASTO ELEVADO', 'GASTO MODERADO', 'GASTO BAIXO', 'SEM GASTO')
+
+FATOR_ATENUACAO = {
+    'GASTO ELEVADO':  1.0,
+    'GASTO MODERADO': 0.7,
+    'GASTO BAIXO':    0.4,
+}
+
+
+def normaliza_nivel(valor):
+    """Garante que o nível de gasto seja sempre um dos valores válidos."""
+    v = (valor or '').strip().upper()
+    return v if v in NIVEIS_GASTO else 'GASTO ELEVADO'
+
+
+def _qtd_disponivel(cur, item_id, qtd_atual):
+    """
+    Para itens SEM GASTO: retorna qtd_atual menos a soma das retiradas em aberto.
+    A quantidade "disponível" nunca é persistida — é sempre calculada na hora,
+    pois a devolução é feita simplesmente apagando a linha da retirada.
+    """
+    cur.execute(
+        'SELECT COALESCE(SUM(quantidade), 0) FROM retiradas_sem_gasto WHERE item_id = %s',
+        (item_id,)
+    )
+    total_ret = float(cur.fetchone()[0])
+    return max(0.0, float(qtd_atual or 0) - total_ret)
 
 
 # ══════════════════════════════════════════════════════
@@ -133,10 +190,13 @@ def disparar_tarefa():
 #  ENGINE DE PREVISÃO (regressão linear OLS)
 # ══════════════════════════════════════════════════════
 
-def calcular_previsao(gastos_lista, qtd_atual):
+def calcular_previsao(gastos_lista, qtd_atual, nivel_gasto='GASTO ELEVADO'):
     """
     gastos_lista : lista de tuplas (data, quantidade) — até 30 dias
     qtd_atual    : estoque atual do item
+    nivel_gasto  : classificação cadastrada no item — pondera o quanto
+                   o consumo projetado pressiona a previsão (ver
+                   FATOR_ATENUACAO). 'SEM GASTO' não entra na equação.
 
     • 1–2 amostras → média simples
     • 3+ amostras  → OLS (captura tendência de alta/baixa)
@@ -148,6 +208,13 @@ def calcular_previsao(gastos_lista, qtd_atual):
         "dias_restantes": None, "media_diaria": 0,
         "desvio_padrao": 0, "confianca": 0, "tendencia": 0
     }
+
+    nivel = normaliza_nivel(nivel_gasto)
+    if nivel == 'SEM GASTO':
+        # Item não passa pela equação de previsão por enquanto — fica
+        # equivalente a "sem histórico", mesmo que tenha qtd_atual.
+        return {**default, "status": "Estável", "classe": "risco-nulo"}
+
     if not gastos_lista or qtd_atual is None:
         return default
 
@@ -177,6 +244,10 @@ def calcular_previsao(gastos_lista, qtd_atual):
             proj_prox   = max(0.0, a + tendencia_b * n)
             peso        = min(1.0, n / 20) * 0.45
             media_proj  = media * (1 - peso) + proj_prox * peso
+
+    # Atenua a projeção de consumo conforme o nível cadastrado do item.
+    # GASTO ELEVADO mantém fator 1.0 (comportamento idêntico ao original).
+    media_proj *= FATOR_ATENUACAO.get(nivel, 1.0)
 
     taxa_pess = (media_proj + 0.5 * desvio) if media_proj > 0 else media_proj
     cv        = (desvio / media) if media > 0 else 1.0
@@ -220,11 +291,15 @@ def _executar_fechamento(cur, modo='manual'):
     5. Registra o fechamento na tabela fechamentos.
     Retorna (n_itens, dados_snapshot, nome_arquivo).
     """
-    # Desconta gastos abertos do estoque
+    # Desconta gastos abertos do estoque — exclui itens SEM GASTO (patrimônio):
+    # ferramentas não têm "gasto" de consumo, apenas retiradas rastreadas separadamente.
     cur.execute('''
-        SELECT item_id, COALESCE(SUM(quantidade), 0)
-        FROM gastos_diarios WHERE fechado = FALSE
-        GROUP BY item_id
+        SELECT gd.item_id, COALESCE(SUM(gd.quantidade), 0)
+        FROM gastos_diarios gd
+        JOIN itens i ON i.id = gd.item_id
+        WHERE gd.fechado = FALSE
+          AND UPPER(i.nivel_gasto) != 'SEM GASTO'
+        GROUP BY gd.item_id
     ''')
     for item_id, total in cur.fetchall():
         if float(total) > 0:
@@ -236,12 +311,17 @@ def _executar_fechamento(cur, modo='manual'):
     cur.execute("UPDATE gastos_diarios SET fechado = TRUE WHERE fechado = FALSE")
     cur.execute("DELETE FROM gastos_diarios WHERE data < %s", (date.today() - timedelta(days=30),))
 
-    # Gera snapshot do estoque atual
-    cur.execute('SELECT nome, categoria, tipo, unidade, qtd_atual FROM itens ORDER BY nome ASC')
+    # Gera snapshot — SEM GASTO sempre com Qtd. Gasta = 0
+    cur.execute('SELECT nome, ca, nivel_gasto, categoria, tipo, unidade, qtd_atual FROM itens ORDER BY nome ASC')
     rows = cur.fetchall()
     dados_snapshot = [
-        {"Item": r[0], "Categoria": r[1], "Tipo": r[2],
-         "Unid.": r[3], "Qtd. Inicial": float(r[4] or 0), "Qtd. Gasta": 0.0}
+        {
+            "Item": r[0], "CA": r[1] or '', "Nivel": r[2],
+            "Categoria": r[3], "Tipo": r[4], "Unid.": r[5],
+            "Qtd. Inicial": float(r[6] or 0),
+            # SEM GASTO → Qtd. Gasta sempre 0; patrimônio não se "consome"
+            "Qtd. Gasta": 0.0
+        }
         for r in rows
     ]
 
@@ -272,7 +352,7 @@ def index():
         cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
         # Busca todos os itens de uma vez
-        cur.execute('SELECT id, nome, categoria, tipo, unidade, qtd_atual FROM itens ORDER BY nome ASC')
+        cur.execute('SELECT id, nome, ca, nivel_gasto, categoria, tipo, unidade, qtd_atual FROM itens ORDER BY nome ASC')
         rows = cur.fetchall()
 
         # Busca todos os gastos ativos de uma vez (evita N+1 queries)
@@ -288,20 +368,39 @@ def index():
             for g in cur.fetchall():
                 gastos_por_item[g['item_id']].append((g['data'], g['quantidade']))
 
+        # Soma de retiradas em aberto por item SEM GASTO (lote, sem N+1)
+        retiradas_por_item = {i: 0.0 for i in ids}
+        if ids:
+            cur.execute('''
+                SELECT item_id, COALESCE(SUM(quantidade), 0)
+                FROM retiradas_sem_gasto
+                WHERE item_id = ANY(%s)
+                GROUP BY item_id
+            ''', (ids,))
+            for item_id, total in cur.fetchall():
+                retiradas_por_item[item_id] = float(total)
+
         # Monta lista de itens com previsão
         itens = []
         criticos = alertas = 0
         for row in rows:
-            prev = calcular_previsao(gastos_por_item[row['id']], row['qtd_atual'])
+            nivel    = normaliza_nivel(row['nivel_gasto'])
+            qtd_base = float(row['qtd_atual'] or 0)
+            # Para SEM GASTO, a quantidade exibida é a disponível (descontando retiradas)
+            qtd_exibir = (max(0.0, qtd_base - retiradas_por_item[row['id']])
+                          if nivel == 'SEM GASTO' else qtd_base)
+            prev  = calcular_previsao(gastos_por_item[row['id']], qtd_base, nivel)
             classe = prev['classe']
             if classe == 'risco-critico': criticos += 1
             elif classe == 'risco-proximo': alertas += 1
             itens.append({
                 'id':          row['id'],
                 'nome':        row['nome'],
+                'ca':          row['ca'] or '',
+                'nivel_gasto': nivel,
                 'categoria':   row['categoria'] or '—',
                 'tipo':        row['tipo'] or '—',
-                'qtd_atual':   float(row['qtd_atual'] or 0),
+                'qtd_atual':   qtd_exibir,
                 'unidade':     row['unidade'] or '',
                 'prev_status': prev['status'],
                 'classe_risco': classe,
@@ -341,6 +440,8 @@ def index():
 @app.route('/adicionar', methods=['POST'])
 def adicionar_item():
     nome  = request.form.get('nome', '').strip().upper()
+    ca    = request.form.get('ca', '').strip()           # opcional — pode ficar vazio
+    nivel = normaliza_nivel(request.form.get('nivel_gasto', ''))
     cat   = request.form.get('categoria', '').strip()
     tipo  = request.form.get('tipo', '').strip()
     unid  = request.form.get('unidade', '').strip()
@@ -353,20 +454,22 @@ def adicionar_item():
         with get_db() as conn:
             cur = conn.cursor()
             cur.execute('''
-                INSERT INTO itens (nome, categoria, tipo, unidade, qtd_atual)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO itens (nome, ca, nivel_gasto, categoria, tipo, unidade, qtd_atual)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (nome) DO UPDATE SET
-                    categoria = EXCLUDED.categoria,
-                    tipo      = EXCLUDED.tipo,
-                    unidade   = EXCLUDED.unidade,
-                    qtd_atual = EXCLUDED.qtd_atual
+                    ca          = EXCLUDED.ca,
+                    nivel_gasto = EXCLUDED.nivel_gasto,
+                    categoria   = EXCLUDED.categoria,
+                    tipo        = EXCLUDED.tipo,
+                    unidade     = EXCLUDED.unidade,
+                    qtd_atual   = EXCLUDED.qtd_atual
                 RETURNING id
-            ''', (nome, cat, tipo, unid, qtd))
+            ''', (nome, ca or None, nivel, cat, tipo, unid, qtd))
             novo_id = cur.fetchone()[0]
 
         return jsonify({'ok': True, 'item': {
-            'id': novo_id, 'nome': nome, 'categoria': cat,
-            'tipo': tipo, 'unidade': unid, 'qtd_atual': qtd,
+            'id': novo_id, 'nome': nome, 'ca': ca, 'nivel_gasto': nivel,
+            'categoria': cat, 'tipo': tipo, 'unidade': unid, 'qtd_atual': qtd,
             'classe_risco': 'risco-nulo', 'prev_status': 'Sem dados'
         }})
     except Exception as e:
@@ -414,8 +517,10 @@ def registrar_gasto():
             ''', (int(item_id), data_gasto, qtd))
 
             # Retorna qtd atual e previsão recalculada para o frontend atualizar sem reload
-            cur.execute('SELECT qtd_atual FROM itens WHERE id = %s', (int(item_id),))
-            qtd_atual = float(cur.fetchone()['qtd_atual'] or 0)
+            cur.execute('SELECT qtd_atual, nivel_gasto FROM itens WHERE id = %s', (int(item_id),))
+            item_row = cur.fetchone()
+            qtd_atual = float(item_row['qtd_atual'] or 0)
+            nivel     = normaliza_nivel(item_row['nivel_gasto'])
 
             cur.execute('''
                 SELECT data, quantidade FROM gastos_diarios
@@ -423,7 +528,7 @@ def registrar_gasto():
             ''', (int(item_id),))
             gastos = [(r['data'], r['quantidade']) for r in cur.fetchall()]
 
-        prev = calcular_previsao(gastos, qtd_atual)
+        prev = calcular_previsao(gastos, qtd_atual, nivel)
         return jsonify({
             'ok':          True,
             'qtd_atual':   qtd_atual,
@@ -466,7 +571,7 @@ def download_planilha(snap_id):
         return redirect(url_for('index'))
 
     df     = pd.DataFrame(json.loads(snap['dados_json']),
-                          columns=["Item", "Categoria", "Tipo", "Unid.", "Qtd. Inicial", "Qtd. Gasta"])
+                          columns=["Item", "CA", "Nivel", "Categoria", "Tipo", "Unid.", "Qtd. Inicial", "Qtd. Gasta"])
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Almoxarifado')
@@ -531,6 +636,8 @@ def upload_excel():
                 if not nome or nome.lower() == 'nan':
                     continue
 
+                ca          = safe_str(row, 'CA')          # opcional — pode vir vazio
+                nivel       = normaliza_nivel(safe_str(row, 'Nivel'))
                 cat         = safe_str(row, 'Categoria')
                 tipo        = safe_str(row, 'Tipo')
                 unidade     = safe_str(row, 'Unid.')
@@ -550,22 +657,24 @@ def upload_excel():
                         })
                         # Atualiza apenas campos de cadastro, não a quantidade
                         cur.execute(
-                            'UPDATE itens SET categoria=%s, tipo=%s, unidade=%s WHERE UPPER(nome)=%s',
-                            (cat, tipo, unidade, nome)
+                            'UPDATE itens SET ca=%s, nivel_gasto=%s, categoria=%s, tipo=%s, unidade=%s WHERE UPPER(nome)=%s',
+                            (ca or None, nivel, cat, tipo, unidade, nome)
                         )
                         itens_sync += 1
                         continue
 
                 # Sem divergência: upsert completo
                 cur.execute('''
-                    INSERT INTO itens (nome, categoria, tipo, unidade, qtd_atual)
-                    VALUES (%s, %s, %s, %s, %s)
+                    INSERT INTO itens (nome, ca, nivel_gasto, categoria, tipo, unidade, qtd_atual)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (nome) DO UPDATE SET
-                        categoria = EXCLUDED.categoria,
-                        tipo      = EXCLUDED.tipo,
-                        unidade   = EXCLUDED.unidade,
-                        qtd_atual = EXCLUDED.qtd_atual
-                ''', (nome, cat, tipo, unidade, qtd_inicial))
+                        ca          = EXCLUDED.ca,
+                        nivel_gasto = EXCLUDED.nivel_gasto,
+                        categoria   = EXCLUDED.categoria,
+                        tipo        = EXCLUDED.tipo,
+                        unidade     = EXCLUDED.unidade,
+                        qtd_atual   = EXCLUDED.qtd_atual
+                ''', (nome, ca or None, nivel, cat, tipo, unidade, qtd_inicial))
                 itens_sync += 1
 
                 # Registra gasto se houver
@@ -632,7 +741,8 @@ def api_item(item_id):
         row = cur.fetchone()
         if not row:
             return jsonify({'error': 'not found'}), 404
-        item = dict(row)
+        item  = dict(row)
+        nivel = normaliza_nivel(item.get('nivel_gasto'))
 
         cur.execute('''
             SELECT data, quantidade, fechado FROM gastos_diarios
@@ -640,16 +750,131 @@ def api_item(item_id):
         ''', (item_id,))
         gastos_raw = cur.fetchall()
 
+        # Retiradas só existem para itens SEM GASTO
+        retiradas = []
+        if nivel == 'SEM GASTO':
+            cur.execute('''
+                SELECT id, data, quantidade, responsavel
+                FROM retiradas_sem_gasto
+                WHERE item_id = %s ORDER BY data DESC, registrado_em DESC
+            ''', (item_id,))
+            retiradas = [
+                {'id': r['id'], 'data': str(r['data']),
+                 'quantidade': float(r['quantidade']),
+                 'responsavel': r['responsavel']}
+                for r in cur.fetchall()
+            ]
+
     prev = calcular_previsao(
         [(g['data'], g['quantidade']) for g in gastos_raw],
-        item['qtd_atual']
+        item['qtd_atual'],
+        nivel
     )
     return jsonify({
-        'item':     {k: str(v) if v is not None else '' for k, v in item.items()},
-        'gastos':   [{'data': str(g['data']), 'quantidade': float(g['quantidade']),
-                      'fechado': g['fechado']} for g in gastos_raw],
-        'previsao': prev
+        'item':      {k: str(v) if v is not None else '' for k, v in item.items()},
+        'gastos':    [{'data': str(g['data']), 'quantidade': float(g['quantidade']),
+                       'fechado': g['fechado']} for g in gastos_raw],
+        'retiradas': retiradas,
+        'previsao':  prev,
     })
+
+
+# ══════════════════════════════════════════════════════
+#  ATUALIZAR QUANTIDADE TOTAL — modal de detalhes
+#  (funciona para qualquer nível; para SEM GASTO altera
+#   o total bruto da empresa, não a quantidade disponível)
+# ══════════════════════════════════════════════════════
+
+@app.route('/api/item/<int:item_id>/atualizar_qtd', methods=['POST'])
+def atualizar_qtd(item_id):
+    try:
+        nova_qtd = float(request.form.get('nova_qtd', 0) or 0)
+    except (ValueError, TypeError):
+        return jsonify({'ok': False, 'erro': 'Quantidade inválida.'}), 400
+    try:
+        with get_db() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+            cur.execute('UPDATE itens SET qtd_atual = %s WHERE id = %s RETURNING nivel_gasto',
+                        (nova_qtd, item_id))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({'ok': False, 'erro': 'Item não encontrado.'}), 404
+            nivel = normaliza_nivel(row['nivel_gasto'])
+            # Para SEM GASTO retorna o disponível (total − retiradas)
+            qtd_disp = _qtd_disponivel(cur, item_id, nova_qtd) if nivel == 'SEM GASTO' else nova_qtd
+        return jsonify({'ok': True, 'qtd_disponivel': qtd_disp})
+    except Exception as e:
+        return jsonify({'ok': False, 'erro': str(e)}), 500
+
+
+# ══════════════════════════════════════════════════════
+#  RETIRADAS — registro e devolução de itens SEM GASTO
+# ══════════════════════════════════════════════════════
+
+@app.route('/api/retirada', methods=['POST'])
+def registrar_retirada():
+    item_id     = request.form.get('item_id')
+    responsavel = (request.form.get('responsavel') or '').strip()
+    try:
+        data_ret = datetime.strptime(request.form.get('data', ''), '%Y-%m-%d').date()
+    except ValueError:
+        data_ret = date.today()
+    try:
+        qtd = float(request.form.get('quantidade', 0) or 0)
+    except (ValueError, TypeError):
+        qtd = 0.0
+
+    if not item_id or qtd <= 0:
+        return jsonify({'ok': False, 'erro': 'Dados inválidos.'}), 400
+    if not responsavel:
+        return jsonify({'ok': False, 'erro': 'Informe o responsável.'}), 400
+
+    try:
+        with get_db() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+            # Confirma que o item é SEM GASTO antes de inserir
+            cur.execute('SELECT qtd_atual, nivel_gasto FROM itens WHERE id = %s', (int(item_id),))
+            row = cur.fetchone()
+            if not row or normaliza_nivel(row['nivel_gasto']) != 'SEM GASTO':
+                return jsonify({'ok': False, 'erro': 'Item não é SEM GASTO.'}), 400
+
+            cur.execute('''
+                INSERT INTO retiradas_sem_gasto (item_id, data, quantidade, responsavel)
+                VALUES (%s, %s, %s, %s) RETURNING id
+            ''', (int(item_id), data_ret, qtd, responsavel))
+            nova_id  = cur.fetchone()[0]
+            qtd_disp = _qtd_disponivel(cur, int(item_id), row['qtd_atual'])
+
+        return jsonify({
+            'ok': True,
+            'retirada_id':   nova_id,
+            'qtd_disponivel': qtd_disp,
+        })
+    except Exception as e:
+        return jsonify({'ok': False, 'erro': str(e)}), 500
+
+
+@app.route('/api/retirada/<int:retirada_id>', methods=['DELETE'])
+def excluir_retirada(retirada_id):
+    try:
+        with get_db() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+            # Busca o item_id antes de deletar para calcular disponível após
+            cur.execute('SELECT item_id FROM retiradas_sem_gasto WHERE id = %s', (retirada_id,))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({'ok': False, 'erro': 'Retirada não encontrada.'}), 404
+            item_id = row['item_id']
+
+            cur.execute('DELETE FROM retiradas_sem_gasto WHERE id = %s', (retirada_id,))
+
+            cur.execute('SELECT qtd_atual FROM itens WHERE id = %s', (item_id,))
+            qtd_atual = float(cur.fetchone()['qtd_atual'] or 0)
+            qtd_disp  = _qtd_disponivel(cur, item_id, qtd_atual)
+
+        return jsonify({'ok': True, 'qtd_disponivel': qtd_disp})
+    except Exception as e:
+        return jsonify({'ok': False, 'erro': str(e)}), 500
 
 
 # ══════════════════════════════════════════════════════

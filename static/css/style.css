@@ -237,6 +237,12 @@ html, body {
   text-transform: uppercase;
   color: var(--text3);
   margin-bottom: 16px;
+  /* Suporta conteúdo inline (ex: seg-ctrl) via flex quando necessário */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 /* ── FORMS ───────────────────────────────────────── */
@@ -246,6 +252,9 @@ html, body {
   gap: 12px;
   margin-bottom: 12px;
 }
+
+/* Linha do modal Novo Item: nome com mais espaço, CA e Nível mais estreitos */
+.form-row-add-item { grid-template-columns: 2fr 1fr 1.4fr; }
 
 .fg {
   display: flex;
@@ -412,7 +421,59 @@ html, body {
   color: var(--text);
 }
 
-/* ── DROP ZONE ───────────────────────────────────── */
+/* ── SEGMENTED CONTROL (toggle Consumo / Patrimônio) ─ */
+.seg-ctrl {
+  display: inline-flex;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 3px;
+  gap: 3px;
+}
+
+.seg-btn {
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 5px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--fnc);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text3);
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.seg-btn:hover:not(.seg-active) {
+  color: var(--text2);
+  background: var(--bg4);
+}
+
+/* Estado ativo: "Consumo" usa azul, "Patrimônio" usa violeta suave
+   para diferenciar visualmente os dois mundos */
+.seg-btn.seg-active[data-seg="todos"] {
+  background: var(--bg4);
+  color: var(--text);
+  border-color: var(--border2);
+}
+
+.seg-btn.seg-active[data-seg="consumo"] {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--blue);
+  border-color: rgba(59, 130, 246, 0.35);
+}
+
+.seg-btn.seg-active[data-seg="patrimonio"] {
+  background: rgba(168, 85, 247, 0.15);
+  color: #a855f7;
+  border-color: rgba(168, 85, 247, 0.35);
+}
+
+
 .drop-zone {
   border: 2px dashed var(--border2);
   border-radius: var(--radius2);
@@ -486,6 +547,16 @@ html, body {
 .tbl tbody tr.risco-proximo { border-left-color: var(--orange); }
 .tbl tbody tr.risco-ok      { border-left-color: var(--green); }
 
+/* Itens SEM GASTO (Patrimônio) — borda roxa independente do risco,
+   fundo levemente diferente para destacar visualmente na mistura com consumíveis */
+.tbl tbody tr[data-nivel="SEM GASTO"] {
+  border-left-color: #a855f7;
+  background: rgba(168, 85, 247, 0.025);
+}
+.tbl tbody tr[data-nivel="SEM GASTO"]:hover {
+  background: rgba(168, 85, 247, 0.055);
+}
+
 .td-num  { text-align: right; font-family: 'Courier New', monospace; }
 .td-dim  { opacity: 0.6; font-size: 11px; }
 .td-nome { font-weight: 500; }
@@ -508,6 +579,14 @@ html, body {
 .conf.risco-proximo { background: rgba(249, 115, 22, 0.1); color: var(--orange); border-color: rgba(249, 115, 22, 0.3); }
 .conf.risco-ok      { background: rgba(34, 197, 94, 0.08); color: var(--green);  border-color: rgba(34, 197, 94, 0.3); }
 .conf.risco-nulo    { background: rgba(71, 85, 105, 0.1);  color: var(--text3);  border-color: rgba(71, 85, 105, 0.3); }
+
+/* ── NÍVEL DE GASTO ──────────────────────────────── */
+/* Escala visual do nível de consumo do item:
+   elevado (mesma criticidade visual de hoje) → moderado → baixo → sem gasto (neutro) */
+.tag.nivel-gasto-elevado  { background: rgba(239, 68, 68, 0.1);   color: var(--red);    border-color: rgba(239, 68, 68, 0.3); }
+.tag.nivel-gasto-moderado { background: rgba(249, 115, 22, 0.1);  color: var(--orange); border-color: rgba(249, 115, 22, 0.3); }
+.tag.nivel-gasto-baixo    { background: rgba(234, 179, 8, 0.1);   color: var(--yellow); border-color: rgba(234, 179, 8, 0.3); }
+.tag.nivel-sem-gasto      { background: rgba(168, 85, 247, 0.12); color: #a855f7;       border-color: rgba(168, 85, 247, 0.35); }
 
 /* ── MODAL ───────────────────────────────────────── */
 .overlay {
@@ -776,4 +855,6 @@ html, body {
   .det-stats    { grid-template-columns: 1fr; }
   .info-grid    { grid-template-columns: 1fr; }
   .div-controls { flex-direction: column; align-items: flex-start; }
+  .seg-ctrl     { width: 100%; justify-content: stretch; }
+  .seg-btn      { flex: 1; text-align: center; }
 }

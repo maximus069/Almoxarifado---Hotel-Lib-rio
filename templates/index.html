@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Projeto 2.0</title>
+  <title>ALMOXARIF. HOTEL</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
 
 <header class="topbar">
   <a class="logo" href="/">
-    <div class="logo-badge">ALM</div>
+    <div class="logo-badge">R</div>
     <div>
       <div class="logo-name">ALMOXARIFADO</div>
       <span class="logo-sub">Gestão de Canteiro</span>
@@ -104,8 +104,7 @@
   <div class="panel-row">
     <div class="panel">
       <div class="panel-hd">🔍 Pesquisa e Filtros</div>
-      {# Filtros são 100% locais — removidos value/selected do Jinja, o JS controla tudo #}
-      <form id="formFiltros" onsubmit="event.preventDefault(); filtrarTabelaLocal();">
+      <form id="formFiltros" onsubmit="event.preventDefault(); filtrarTabelaLocalComSeg();">
         <div class="form-row" style="margin-bottom:15px; display: block;">
           <div class="fg" style="width: 100%;">
             <label>Nome</label>
@@ -144,7 +143,7 @@
             </select>
           </div>
           <div style="display: flex; gap: 8px; margin-left: auto; padding-bottom: 1px;">
-            <button type="button" class="btn btn-blue btn-sm" onclick="filtrarTabelaLocal()">Filtrar</button>
+            <button type="button" class="btn btn-blue btn-sm" onclick="filtrarTabelaLocalComSeg()">Filtrar</button>
             <button type="button" class="btn btn-ghost btn-sm" onclick="limparTodosOsFiltros()">✕</button>
           </div>
         </div>
@@ -158,7 +157,7 @@
         <div class="drop-zone" id="dz" onclick="document.getElementById('file-inp').click()">
           <div class="dz-ico">📊</div>
           <p id="dz-label">Clique ou arraste o arquivo <strong>.xlsx</strong></p>
-          <small>Colunas: Item · Categoria · Tipo · Unid. · Qtd. Inicial · Qtd. Gasta</small>
+          <small>Colunas: Item · CA · Nivel · Categoria · Tipo · Unid. · Qtd. Inicial · Qtd. Gasta</small>
         </div>
         <input type="file" id="file-inp" name="file" accept=".xlsx" style="display:none;">
         <div class="upload-footer">
@@ -175,12 +174,20 @@
   </div>
 
   <div class="panel">
-    <div class="panel-hd">📦 Estoque de Itens</div>
+    <div class="panel-hd" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+      <span>📦 Estoque de Itens</span>
+      <div class="seg-ctrl" id="seg-ctrl">
+        <button type="button" class="seg-btn" data-seg="todos" onclick="filtroSeg('todos')">Todos</button>
+        <button type="button" class="seg-btn seg-active" data-seg="consumo" onclick="filtroSeg('consumo')">Consumo</button>
+        <button type="button" class="seg-btn" data-seg="patrimonio" onclick="filtroSeg('patrimonio')">Patrimônio</button>
+      </div>
+    </div>
     <div class="tbl-wrap">
       <table class="tbl" id="tbl-estoque">
         <thead>
           <tr>
             <th>Item</th>
+            <th>Nível</th>
             <th>Categoria / Tipo</th>
             <th style="text-align:center;">Qtd.</th>
             <th style="text-align:center;">Previsão</th>
@@ -190,8 +197,14 @@
         <tbody id="tbl-body">
           {% if itens %}
             {% for item in itens %}
-              <tr class="{{ item['classe_risco'] }}" data-id="{{ item['id'] }}">
-                <td class="td-nome"><strong>{{ item['nome'] }}</strong></td>
+              <tr class="{{ item['classe_risco'] }}" data-id="{{ item['id'] }}" data-nivel="{{ item['nivel_gasto'] }}">
+                <td class="td-nome">
+                  <strong>{{ item['nome'] }}</strong>
+                  {% if item['ca'] %}<div class="td-dim">CA {{ item['ca'] }}</div>{% endif %}
+                </td>
+                <td>
+                  <span class="tag nivel-{{ item['nivel_gasto']|lower|replace(' ', '-') }}">{{ item['nivel_gasto'] }}</span>
+                </td>
                 <td>
                   <span class="tag">{{ item['categoria'] }}</span>
                   <div class="td-dim">{{ item['tipo'] }}</div>
@@ -206,7 +219,7 @@
                 <td>
                   <div style="display: flex; gap: 6px; justify-content: center; align-items: center;">
                     <button type="button" class="btn btn-ico" title="Detalhes" onclick="abreDetalhe({{ item['id'] }}, '{{ item['nome'] }}')">🔍</button>
-                    <button type="button" class="btn btn-ico" title="Registrar Gasto" onclick="abreGasto({{ item['id'] }}, '{{ item['nome'] }}', '{{ item['unidade'] }}')">📝</button>
+                    <button type="button" class="btn btn-ico" title="Registrar Gasto" onclick="abreGastoOuRetirada({{ item['id'] }}, '{{ item['nome'] }}', '{{ item['unidade'] }}', '{{ item['nivel_gasto'] }}')">📝</button>
                     <button type="button" class="btn btn-ico" title="Deletar" onclick="deletarItem(this, {{ item['id'] }})">🗑️</button>
                   </div>
                 </td>
@@ -214,7 +227,7 @@
             {% endfor %}
           {% else %}
             <tr id="tr-empty">
-              <td colspan="5">
+              <td colspan="6">
                 <div class="empty">
                   <div class="empty-ico">📦</div>
                   <p>Nenhum item no estoque. Adicione um novo item ou importe uma planilha.</p>
@@ -237,10 +250,23 @@
       <button type="button" class="btn-ico" onclick="fechaModal('m-add')">✕</button>
     </div>
     <div class="modal-body">
-      <div class="form-row">
+      <div class="form-row form-row-add-item">
         <div class="fg">
           <label>Nome do Item</label>
           <input type="text" id="add-nome" placeholder="ex. Parafuso Zinco M8">
+        </div>
+        <div class="fg">
+          <label>CA <span style="color:var(--text3);font-weight:400;">(opcional)</span></label>
+          <input type="text" id="add-ca" placeholder="ex. 12345">
+        </div>
+        <div class="fg">
+          <label>Nível de Gasto</label>
+          <select id="add-nivel">
+            <option value="GASTO ELEVADO" selected>Gasto Elevado</option>
+            <option value="GASTO MODERADO">Gasto Moderado</option>
+            <option value="GASTO BAIXO">Gasto Baixo</option>
+            <option value="SEM GASTO">Sem Gasto</option>
+          </select>
         </div>
       </div>
       <div class="form-row">
@@ -315,7 +341,41 @@
   </div>
 </div>
 
-{# ── MODAL: Detalhes ──────────────────────────────────────────────────── #}
+{# ── MODAL: Retirada de Item (SEM GASTO) ─────────────────────────────── #}
+<div class="overlay" id="m-retirada">
+  <div class="modal">
+    <div class="modal-hd">
+      <div class="modal-title" id="ret-title">🔧 Retirada de Item</div>
+      <button type="button" class="btn-ico" onclick="fechaModal('m-retirada')">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="ret-id">
+      <div class="form-row">
+        <div class="fg">
+          <label>Data da Retirada</label>
+          <input type="date" id="ret-data" value="{{ hoje }}">
+        </div>
+        <div class="fg">
+          <label id="ret-unid-label">Quantidade</label>
+          <input type="number" id="ret-qtd" placeholder="0" min="1" step="1">
+        </div>
+      </div>
+      <div class="form-row" style="grid-template-columns: 1fr;">
+        <div class="fg">
+          <label>Responsável pela Retirada</label>
+          <input type="text" id="ret-responsavel" placeholder="Nome de quem está retirando">
+        </div>
+      </div>
+      <p id="ret-erro" style="color:var(--red);font-size:12px;margin-top:8px;display:none;"></p>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" onclick="fechaModal('m-retirada')">Cancelar</button>
+      <button type="button" class="btn btn-primary" onclick="salvarRetirada()">🔧 Registrar Retirada</button>
+    </div>
+  </div>
+</div>
+
+
 <div class="overlay" id="m-detalhe">
   <div class="modal wide">
     <div class="modal-hd">
@@ -505,10 +565,10 @@ function filtrarTabelaLocal() {
   var riscoBusca   = document.getElementById('filtroRisco').value;
   var linhas = document.querySelectorAll('#tbl-body tr[data-id]');
   linhas.forEach(function(linha) {
-    var celNome  = linha.querySelector('td:first-child');
-    var txtNome  = celNome ? celNome.textContent.toLowerCase() : '';
+    var celNome  = linha.querySelector('.td-nome'); /* contém nome + CA, quando houver */
+    var txtBusca = (celNome ? celNome.textContent : '').toLowerCase();
     var txtLinha = linha.textContent.toLowerCase();
-    var ok = (!textoBusca    || txtNome.includes(textoBusca))
+    var ok = (!textoBusca    || txtBusca.includes(textoBusca))
           && (!categoriaBusca || txtLinha.includes(categoriaBusca))
           && (!tipoBusca      || txtLinha.includes(tipoBusca))
           && (!riscoBusca     || linha.classList.contains(riscoBusca));
@@ -521,9 +581,7 @@ function limparTodosOsFiltros() {
   document.getElementById('filtroCat').selectedIndex  = 0;
   document.getElementById('filtroTipo').selectedIndex = 0;
   document.getElementById('filtroRisco').selectedIndex = 0;
-  document.querySelectorAll('#tbl-body tr[data-id]').forEach(function(tr) {
-    tr.style.display = '';
-  });
+  filtroSeg('consumo'); /* volta ao estado visual padrão */
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -531,6 +589,8 @@ function limparTodosOsFiltros() {
 ═══════════════════════════════════════════════════════════════════ */
 async function adicionarItem() {
   var nome  = document.getElementById('add-nome').value.trim();
+  var ca    = document.getElementById('add-ca').value.trim();
+  var nivel = document.getElementById('add-nivel').value;
   var cat   = document.getElementById('add-cat').value;
   var tipo  = document.getElementById('add-tipo').value;
   var unid  = document.getElementById('add-unid').value.trim();
@@ -550,6 +610,8 @@ async function adicionarItem() {
 
   var fd = new FormData();
   fd.append('nome', nome);
+  fd.append('ca', ca);
+  fd.append('nivel_gasto', nivel);
   fd.append('categoria', cat);
   fd.append('tipo', tipo);
   fd.append('unidade', unid);
@@ -572,6 +634,8 @@ async function adicionarItem() {
 
     /* Limpa o formulário */
     document.getElementById('add-nome').value = '';
+    document.getElementById('add-ca').value = '';
+    document.getElementById('add-nivel').selectedIndex = 0;
     document.getElementById('add-cat').selectedIndex  = 0;
     document.getElementById('add-tipo').selectedIndex = 0;
     document.getElementById('add-unid').value = '';
@@ -594,12 +658,17 @@ function insereLinhaNaTabela(item) {
   var qtdFmt = parseFloat(item.qtd_atual).toFixed(2);
   var classeRisco = item.classe_risco || 'risco-ok';
   var prevStatus  = item.prev_status  || 'OK';
+  var nivel       = item.nivel_gasto  || 'GASTO ELEVADO';
+  var nivelCls    = nivel.toLowerCase().replace(/ /g, '-');
+  var caHtml      = item.ca ? '<div class="td-dim">CA ' + escHtml(item.ca) + '</div>' : '';
 
   var tr = document.createElement('tr');
   tr.className = classeRisco;
   tr.setAttribute('data-id', item.id);
+  tr.setAttribute('data-nivel', nivel);
   tr.innerHTML =
-    '<td class="td-nome"><strong>' + escHtml(item.nome) + '</strong></td>' +
+    '<td class="td-nome"><strong>' + escHtml(item.nome) + '</strong>' + caHtml + '</td>' +
+    '<td><span class="tag nivel-' + nivelCls + '">' + escHtml(nivel) + '</span></td>' +
     '<td><span class="tag">' + escHtml(item.categoria) + '</span><div class="td-dim">' + escHtml(item.tipo) + '</div></td>' +
     '<td style="text-align:center;"><span class="td-num qtd-val">' + qtdFmt + '</span> <span class="td-dim">' + escHtml(item.unidade) + '</span></td>' +
     '<td style="text-align:center;"><span class="conf ' + classeRisco + '">' + escHtml(prevStatus) + '</span></td>' +
@@ -698,45 +767,108 @@ async function salvarGasto() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   DETALHES DO ITEM (fetch existente, mantido)
+   DETALHES DO ITEM (bifurca em SEM GASTO vs demais)
 ═══════════════════════════════════════════════════════════════════ */
 async function abreDetalhe(itemId, nome) {
   var body    = document.getElementById('det-body');
   var titleEl = document.getElementById('det-title');
   if (!body) return;
-  if (titleEl) titleEl.textContent = '📊 Detalhes — ' + nome;
-  body.innerHTML = '<p style="color:var(--text2);text-align:center;padding:30px 0;">Carregando…</p>';
+  if (titleEl) titleEl.textContent = '\u{1F4CA} Detalhes \u2014 ' + nome;
+  body.innerHTML = '<p style="color:var(--text2);text-align:center;padding:30px 0;">Carregando\u2026</p>';
   abreModal('m-detalhe');
   try {
     var res  = await fetch('/api/item/' + itemId);
     var data = await res.json();
     var item  = data.item;
     var prev  = data.previsao;
-    var gastos = data.gastos || [];
-    var histHtml = gastos.length > 0
-      ? gastos.map(function(g) {
-          return '<tr>' +
-            '<td style="text-align:center;font-size:12px;">' + g.data + '</td>' +
-            '<td style="text-align:center;font-size:12px;">' + g.quantidade + ' ' + item.unidade + '</td>' +
-            '<td style="text-align:center;font-size:11px;color:' + (g.fechado ? 'var(--green)' : 'var(--orange)') + ';">' +
-              (g.fechado ? '✓ Fechado' : '⊙ Aberto') +
-            '</td></tr>';
-        }).join('')
-      : '<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:20px 0;">Sem registros</td></tr>';
-    var corRisco = prev.classe.indexOf('critico') >= 0 ? 'red'
-                 : prev.classe.indexOf('proximo') >= 0 ? 'orange' : 'green';
-    body.innerHTML =
-      '<div class="det-stats">' +
-        '<div class="info-box"><div class="info-lbl">Quantidade Atual</div><div class="info-val">' + item.qtd_atual + ' ' + item.unidade + '</div></div>' +
-        '<div class="info-box"><div class="info-lbl">Previsão</div><div class="info-val" style="color:var(--' + corRisco + ');">' + prev.status + '</div></div>' +
-        '<div class="info-box"><div class="info-lbl">Dias Restantes</div><div class="info-val">' + (prev.dias_restantes ? prev.dias_restantes + 'd' : '—') + '</div></div>' +
-        '<div class="info-box"><div class="info-lbl">Confiança</div><div class="info-val">' + prev.confianca + '%</div></div>' +
-      '</div>' +
-      '<div class="sep" style="margin:16px 0;"></div>' +
-      '<div style="font-size:12px;color:var(--text2);margin-bottom:14px;"><strong style="color:var(--text);">Histórico de Gastos (últimos 30 dias)</strong></div>' +
-      '<div class="tbl-wrap"><table class="tbl"><thead><tr style="font-size:11px;">' +
-        '<th style="text-align:center;">Data</th><th style="text-align:center;">Quantidade</th><th style="text-align:center;">Status</th>' +
-      '</tr></thead><tbody style="font-size:12px;">' + histHtml + '</tbody></table></div>';
+    var nivel = (item.nivel_gasto || '').toUpperCase();
+    var caLinha = item.ca
+      ? '<div style="font-size:12px;color:var(--text2);margin-bottom:10px;">CA <strong style="color:var(--text);">' + item.ca + '</strong></div>'
+      : '';
+    /* Campo de editar quantidade total (presente nos dois modos) */
+    var editQtdHtml =
+      '<div style="display:flex;align-items:flex-end;gap:10px;margin-bottom:16px;">' +
+        '<div class="fg" style="flex:1;">' +
+          '<label style="font-size:12px;color:var(--text2);">Atualizar quantidade total (' + item.unidade + ')</label>' +
+          '<input type="number" id="det-qtd-edit" value="' + parseFloat(item.qtd_atual).toFixed(2) + '" min="0" step="0.01" style="width:100%;">' +
+        '</div>' +
+        '<button type="button" class="btn btn-blue btn-sm" onclick="salvarQtdTotal(' + itemId + ')">Salvar</button>' +
+      '</div>';
+
+    if (nivel === 'SEM GASTO') {
+      /* ── MODO PATRIMÔNIO ─────────────────────────────────────────── */
+      var retiradas = data.retiradas || [];
+      var totalRet  = retiradas.reduce(function(s, r) { return s + parseFloat(r.quantidade); }, 0);
+      var disponivel = Math.max(0, parseFloat(item.qtd_atual) - totalRet);
+      var retHtml = retiradas.length > 0
+        ? retiradas.map(function(r) {
+            return '<tr>' +
+              '<td style="font-size:12px;text-align:center;">' + r.data + '</td>' +
+              '<td style="font-size:12px;text-align:center;">' + r.quantidade + ' ' + item.unidade + '</td>' +
+              '<td style="font-size:12px;text-align:center;">' + escHtml(r.responsavel) + '</td>' +
+              '<td style="text-align:center;">' +
+                '<button type="button" class="btn btn-ico" title="Excluir retirada" onclick="excluirRetirada(' + r.id + ',' + itemId + ')">' +
+                  '<span style="color:var(--red);">\u{1F5D1}</span>' +
+                '</button>' +
+              '</td>' +
+            '</tr>';
+          }).join('')
+        : '<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:20px 0;">Nenhuma retirada em aberto</td></tr>';
+      body.innerHTML =
+        caLinha +
+        '<div style="font-size:12px;color:var(--text2);margin-bottom:14px;">N\u00EDvel de Gasto: <strong style="color:var(--text);">SEM GASTO</strong></div>' +
+        '<div class="det-stats">' +
+          '<div class="info-box"><div class="info-lbl">Dispon\u00EDvel</div><div class="info-val" id="det-disponivel">' + disponivel.toFixed(2) + ' ' + item.unidade + '</div></div>' +
+          '<div class="info-box"><div class="info-lbl">Total no Sistema</div><div class="info-val">' + parseFloat(item.qtd_atual).toFixed(2) + ' ' + item.unidade + '</div></div>' +
+          '<div class="info-box"><div class="info-lbl">Em Uso</div><div class="info-val" style="color:var(--orange);">' + totalRet.toFixed(2) + ' ' + item.unidade + '</div></div>' +
+        '</div>' +
+        '<div class="sep" style="margin:14px 0;"></div>' +
+        editQtdHtml +
+        '<div class="sep" style="margin:14px 0;"></div>' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">' +
+          '<div style="font-size:12px;color:var(--text2);"><strong style="color:var(--text);">Hist\u00F3rico de Usos</strong></div>' +
+          '<button type="button" class="btn btn-primary btn-sm" onclick="fechaModal(\'m-detalhe\'); abreRetirada(' + itemId + ', \'' + escJs(item.nome) + '\', \'' + escJs(item.unidade) + '\')">\uFF0B Adicionar Retirada</button>' +
+        '</div>' +
+        '<div class="tbl-wrap"><table class="tbl"><thead><tr style="font-size:11px;">' +
+          '<th style="text-align:center;">Data</th>' +
+          '<th style="text-align:center;">Qtd.</th>' +
+          '<th style="text-align:center;">Respons\u00E1vel</th>' +
+          '<th style="text-align:center;width:48px;"></th>' +
+        '</tr></thead><tbody id="ret-tbody" style="font-size:12px;">' + retHtml + '</tbody></table></div>';
+    } else {
+      /* ── MODO CONSUMO (original + editar qtd) ───────────────────── */
+      var gastos  = data.gastos || [];
+      var corRisco = prev.classe.indexOf('critico') >= 0 ? 'red'
+                   : prev.classe.indexOf('proximo') >= 0 ? 'orange' : 'green';
+      var histHtml = gastos.length > 0
+        ? gastos.map(function(g) {
+            return '<tr>' +
+              '<td style="text-align:center;font-size:12px;">' + g.data + '</td>' +
+              '<td style="text-align:center;font-size:12px;">' + g.quantidade + ' ' + item.unidade + '</td>' +
+              '<td style="text-align:center;font-size:11px;color:' + (g.fechado ? 'var(--green)' : 'var(--orange)') + ';">' +
+                (g.fechado ? '\u2713 Fechado' : '\u2299 Aberto') +
+              '</td></tr>';
+          }).join('')
+        : '<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:20px 0;">Sem registros</td></tr>';
+      body.innerHTML =
+        caLinha +
+        '<div style="font-size:12px;color:var(--text2);margin-bottom:14px;">N\u00EDvel de Gasto: <strong style="color:var(--text);">' + nivel + '</strong></div>' +
+        '<div class="det-stats">' +
+          '<div class="info-box"><div class="info-lbl">Quantidade Atual</div><div class="info-val">' + item.qtd_atual + ' ' + item.unidade + '</div></div>' +
+          '<div class="info-box"><div class="info-lbl">M\u00E9dia Di\u00E1ria</div><div class="info-val">' + prev.media_diaria + ' ' + item.unidade + '/dia</div></div>' +
+          '<div class="info-box"><div class="info-lbl">Desvio Padr\u00E3o</div><div class="info-val">' + prev.desvio_padrao + '</div></div>' +
+          '<div class="info-box"><div class="info-lbl">Previs\u00E3o</div><div class="info-val" style="color:var(--' + corRisco + ');">' + prev.status + '</div></div>' +
+          '<div class="info-box"><div class="info-lbl">Dias Restantes</div><div class="info-val">' + (prev.dias_restantes ? prev.dias_restantes + 'd' : '\u2014') + '</div></div>' +
+          '<div class="info-box"><div class="info-lbl">Confian\u00E7a</div><div class="info-val">' + prev.confianca + '%</div></div>' +
+        '</div>' +
+        '<div class="sep" style="margin:14px 0;"></div>' +
+        editQtdHtml +
+        '<div class="sep" style="margin:14px 0;"></div>' +
+        '<div style="font-size:12px;color:var(--text2);margin-bottom:14px;"><strong style="color:var(--text);">Hist\u00F3rico de Gastos (\u00FAltimos 30 dias)</strong></div>' +
+        '<div class="tbl-wrap"><table class="tbl"><thead><tr style="font-size:11px;">' +
+          '<th style="text-align:center;">Data</th><th style="text-align:center;">Quantidade</th><th style="text-align:center;">Status</th>' +
+        '</tr></thead><tbody style="font-size:12px;">' + histHtml + '</tbody></table></div>';
+    }
   } catch(e) {
     body.innerHTML = '<p style="color:var(--red);text-align:center;padding:20px 0;">Erro ao carregar detalhes.</p>';
   }
@@ -836,8 +968,8 @@ async function aplicarDiv() {
 
         /* Atualiza a quantidade na tabela de estoque sem recarregar */
         document.querySelectorAll('#tbl-body tr[data-id]').forEach(function(tr) {
-          var tdNome = tr.querySelector('.td-nome');
-          if (tdNome && tdNome.textContent.trim().toUpperCase() === String(d.nome).trim().toUpperCase()) {
+          var tdNomeStrong = tr.querySelector('.td-nome strong');
+          if (tdNomeStrong && tdNomeStrong.textContent.trim().toUpperCase() === String(d.nome).trim().toUpperCase()) {
             var spanQtd = tr.querySelector('.qtd-val');
             if (spanQtd) spanQtd.textContent = parseFloat(d.qtd_planilha).toFixed(2);
           }
@@ -851,8 +983,139 @@ async function aplicarDiv() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   UTILITÁRIOS DE ESCAPE
+   TOGGLE SEGMENTED CONTROL — Todos / Consumo / Patrimônio
 ═══════════════════════════════════════════════════════════════════ */
+var segAtual = 'consumo'; /* estado inicial: mostra só consumo */
+
+function filtroSeg(seg) {
+  segAtual = seg;
+  /* Atualiza visual dos botões */
+  document.querySelectorAll('.seg-btn').forEach(function(b) {
+    b.classList.toggle('seg-active', b.getAttribute('data-seg') === seg);
+  });
+  /* Aplica visibilidade nas linhas — respeita filtros de busca existentes */
+  document.querySelectorAll('#tbl-body tr[data-id]').forEach(function(tr) {
+    var nivel = (tr.getAttribute('data-nivel') || '').toUpperCase();
+    var ehPatrimonio = nivel === 'SEM GASTO';
+    var visivelPorSeg = seg === 'todos'
+      || (seg === 'consumo'    && !ehPatrimonio)
+      || (seg === 'patrimonio' && ehPatrimonio);
+    tr.style.display = visivelPorSeg ? '' : 'none';
+  });
+}
+
+/* Quando os filtros de busca são usados, resetam o toggle para "todos"
+   para não conflitar com o segmented control */
+function filtrarTabelaLocalComSeg() {
+  /* Reseta o seg para todos silenciosamente se o usuário estiver filtrando */
+  var textoBusca = document.getElementById('buscaNome').value.trim();
+  var cat  = document.getElementById('filtroCat').value;
+  var tipo = document.getElementById('filtroTipo').value;
+  var risc = document.getElementById('filtroRisco').value;
+  var temFiltro = textoBusca || cat || tipo || risc;
+  if (temFiltro && segAtual !== 'todos') {
+    segAtual = 'todos';
+    document.querySelectorAll('.seg-btn').forEach(function(b) {
+      b.classList.toggle('seg-active', b.getAttribute('data-seg') === 'todos');
+    });
+  }
+  filtrarTabelaLocal();
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   ATUALIZAR QUANTIDADE TOTAL (ambos os modos de detalhe)
+═══════════════════════════════════════════════════════════════════ */
+async function salvarQtdTotal(itemId) {
+  var input = document.getElementById('det-qtd-edit');
+  if (!input) return;
+  var novaQtd = parseFloat(input.value);
+  if (isNaN(novaQtd) || novaQtd < 0) { showFlash('⚠ Quantidade inválida.', true); return; }
+  try {
+    var fd = new FormData();
+    fd.append('nova_qtd', novaQtd);
+    var res  = await fetch('/api/item/' + itemId + '/atualizar_qtd', { method: 'POST', body: fd });
+    var data = await res.json();
+    if (!data.ok) { showFlash('⚠ ' + (data.erro || 'Erro ao salvar.'), true); return; }
+    /* Atualiza a célula na tabela de estoque */
+    var tr = document.querySelector('#tbl-body tr[data-id="' + itemId + '"]');
+    if (tr) {
+      var cel = tr.querySelector('.qtd-val');
+      if (cel) cel.textContent = novaQtd.toFixed(2);
+    }
+    showFlash('✅ Quantidade atualizada.');
+  } catch(e) { showFlash('⚠ Erro de conexão.', true); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   RETIRADAS — SEM GASTO
+═══════════════════════════════════════════════════════════════════ */
+function abreGastoOuRetirada(itemId, nome, unidade, nivel) {
+  if ((nivel || '').toUpperCase() === 'SEM GASTO') {
+    abreRetirada(itemId, nome, unidade);
+  } else {
+    abreGasto(itemId, nome, unidade);
+  }
+}
+
+function abreRetirada(itemId, nome, unidade) {
+  document.getElementById('ret-id').value = itemId;
+  document.getElementById('ret-title').textContent = '🔧 Retirada — ' + nome;
+  document.getElementById('ret-unid-label').textContent = 'Quantidade (' + unidade + ')';
+  document.getElementById('ret-qtd').value = '';
+  document.getElementById('ret-responsavel').value = '';
+  document.getElementById('ret-erro').style.display = 'none';
+  abreModal('m-retirada');
+}
+
+async function salvarRetirada() {
+  var id   = document.getElementById('ret-id').value;
+  var data = document.getElementById('ret-data').value;
+  var qtd  = parseFloat(document.getElementById('ret-qtd').value);
+  var resp = document.getElementById('ret-responsavel').value.trim();
+  var erro = document.getElementById('ret-erro');
+  if (!qtd || qtd <= 0) { erro.textContent = 'Informe uma quantidade válida.'; erro.style.display = 'block'; return; }
+  if (!resp) { erro.textContent = 'Informe o nome do responsável.'; erro.style.display = 'block'; return; }
+  erro.style.display = 'none';
+  try {
+    var fd = new FormData();
+    fd.append('item_id', id);
+    fd.append('data', data);
+    fd.append('quantidade', qtd);
+    fd.append('responsavel', resp);
+    var res  = await fetch('/api/retirada', { method: 'POST', body: fd });
+    var json = await res.json();
+    if (!json.ok) { erro.textContent = json.erro || 'Erro ao registrar.'; erro.style.display = 'block'; return; }
+    /* Atualiza qtd disponível na tabela de estoque */
+    var tr = document.querySelector('#tbl-body tr[data-id="' + id + '"]');
+    if (tr && json.qtd_disponivel !== undefined) {
+      var cel = tr.querySelector('.qtd-val');
+      if (cel) cel.textContent = parseFloat(json.qtd_disponivel).toFixed(2);
+    }
+    fechaModal('m-retirada');
+    showFlash('✅ Retirada registrada.');
+  } catch(e) { erro.textContent = 'Erro de conexão.'; erro.style.display = 'block'; }
+}
+
+async function excluirRetirada(retiradaId, itemId) {
+  if (!confirm('Confirmar devolução? A retirada será removida.')) return;
+  try {
+    var res  = await fetch('/api/retirada/' + retiradaId, { method: 'DELETE' });
+    var json = await res.json();
+    if (!json.ok) { showFlash('⚠ ' + (json.erro || 'Erro ao excluir.'), true); return; }
+    /* Remove a linha do histórico de usos no modal */
+    var btn = document.querySelector('[onclick*="excluirRetirada(' + retiradaId + '"]');
+    if (btn) btn.closest('tr').remove();
+    /* Atualiza qtd disponível na tabela de estoque */
+    var tr = document.querySelector('#tbl-body tr[data-id="' + itemId + '"]');
+    if (tr && json.qtd_disponivel !== undefined) {
+      var cel = tr.querySelector('.qtd-val');
+      if (cel) cel.textContent = parseFloat(json.qtd_disponivel).toFixed(2);
+    }
+    showFlash('✅ Devolução registrada.');
+  } catch(e) { showFlash('⚠ Erro de conexão.', true); }
+}
+
+
 function escHtml(str) {
   return String(str)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
@@ -911,6 +1174,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
   /* KPI inicial a partir do DOM (sem depender de variáveis Jinja no JS) */
   atualizaKPIs();
+  /* Toggle: começa em "Consumo" por padrão */
+  filtroSeg('consumo');
 });
 </script>
 
